@@ -148,7 +148,7 @@ return function(arguments)
   local test_filter_args = get_test_filter_arguments(arguments.tree, position)
 
   local context = {}
-  context.test_resuls_directory = get_test_results_directory(gradle_executable, project_directory)
+  context.test_results_directory = get_test_results_directory(gradle_executable, project_directory)
 
   -- Determine which strategy to use
   local strategy = arguments.strategy or 'integrated'

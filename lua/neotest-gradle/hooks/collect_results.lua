@@ -105,7 +105,7 @@ end
 return function(build_specfication, _, tree)
   local results = {}
   local position = tree:data()
-  local results_directory = build_specfication.context.test_resuls_directory
+  local results_directory = build_specfication.context.test_results_directory
   local juris_reports = parse_xml_files_from_directory(results_directory)
 
   for _, juris_report in pairs(juris_reports) do
