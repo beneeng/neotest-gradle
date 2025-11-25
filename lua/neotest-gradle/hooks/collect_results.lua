@@ -51,20 +51,39 @@ local function find_position_for_test_case(tree, test_case_node)
   local test_name = test_case_node._attr.name:gsub('%(.*%)$', '') -- Strip parameters
   local class_name = test_case_node._attr.classname
 
+  -- Build multiple candidate IDs to handle different JUnit formats
   local candidate_ids = {
     class_name .. '.' .. test_name,                    -- JUnit4: com.example.Test.method
-    class_name:gsub('%$', '.') .. '.' .. test_name     -- Jupiter: com.example.Test$Inner -> com.example.Test.Inner.method (nested classes)
+    class_name:gsub('%$', '.') .. '.' .. test_name,    -- Jupiter: com.example.Test$Inner -> com.example.Test.Inner.method (nested classes)
+    class_name,                                        -- Just the class name (for namespace matching)
   }
-  
+
+  -- Debug logging
+  vim.notify(
+    string.format('[neotest-gradle] Looking for test: %s in class: %s', test_name, class_name),
+    vim.log.levels.DEBUG
+  )
+
   for _, position in tree:iter() do
     if position then
       for _, candidate_id in ipairs(candidate_ids) do
         if position.id == candidate_id then
+          vim.notify(
+            string.format('[neotest-gradle] Matched position: %s (type: %s)', position.id, position.type),
+            vim.log.levels.DEBUG
+          )
           return position
         end
       end
     end
   end
+
+  -- Log if no match found
+  vim.notify(
+    string.format('[neotest-gradle] No match found for test: %s.%s\nTried candidates: %s',
+      class_name, test_name, vim.inspect(candidate_ids)),
+    vim.log.levels.WARN
+  )
 
   return nil
 end
@@ -112,7 +131,20 @@ return function(build_specfication, _, tree)
   local results = {}
   local position = tree:data()
   local results_directory = build_specfication.context.test_results_directory
+
+  -- Debug logging for results directory
+  vim.notify(
+    string.format('[neotest-gradle] Looking for test results in: %s', results_directory),
+    vim.log.levels.INFO
+  )
+
   local juris_reports = parse_xml_files_from_directory(results_directory)
+
+  -- Debug logging for found XML files
+  vim.notify(
+    string.format('[neotest-gradle] Found %d XML report(s)', #juris_reports),
+    vim.log.levels.INFO
+  )
 
   for _, juris_report in pairs(juris_reports) do
     for _, test_suite_node in pairs(asList(juris_report.testsuite)) do
@@ -129,6 +161,16 @@ return function(build_specfication, _, tree)
       end
     end
   end
+
+  -- Debug logging for results
+  local result_count = 0
+  for _ in pairs(results) do
+    result_count = result_count + 1
+  end
+  vim.notify(
+    string.format('[neotest-gradle] Collected %d test result(s)', result_count),
+    vim.log.levels.INFO
+  )
 
   return results
 end
