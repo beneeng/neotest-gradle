@@ -52,14 +52,15 @@ local function find_position_for_test_case(tree, test_case_node)
   local class_name = test_case_node._attr.classname
 
   -- Build multiple candidate IDs to handle different JUnit formats
+  -- IMPORTANT: Most specific patterns first!
   local candidate_ids = {
     class_name .. '.' .. test_name,                    -- JUnit4: com.example.Test.method
     class_name:gsub('%$', '.') .. '.' .. test_name,    -- Jupiter: com.example.Test$Inner -> com.example.Test.Inner.method (nested classes)
-    class_name,                                        -- Just the class name (for namespace matching)
   }
 
+  -- First try to match test positions (type = 'test')
   for _, position in tree:iter() do
-    if position then
+    if position and position.type == 'test' then
       for _, candidate_id in ipairs(candidate_ids) do
         if position.id == candidate_id then
           return position
@@ -161,46 +162,37 @@ return function(build_specfication, _, tree)
   end
 
   -- Aggregate results for namespace and file positions
-  -- Walk the tree bottom-up to aggregate results from children to parents
-  local function aggregate_results(node)
-    local data = node:data()
-    if not data then
-      return nil
-    end
+  -- Iterate through all positions and aggregate from children to parents
+  for _, position in tree:iter() do
+    if position and (position.type == 'namespace' or position.type == 'file') then
+      -- Check if we already have a result for this position
+      if not results[position.id] then
+        -- Count child results
+        local has_any_result = false
+        local has_failure = false
 
-    -- If we already have a result for this position (test level), return it
-    if results[data.id] then
-      return results[data.id].status
-    end
-
-    -- For namespace and file positions, aggregate from children
-    if data.type == 'namespace' or data.type == 'file' then
-      local has_any_result = false
-      local has_failure = false
-
-      for child in node:iter_nodes() do
-        local child_status = aggregate_results(child)
-        if child_status then
-          has_any_result = true
-          if child_status == STATUS_FAILED then
-            has_failure = true
+        -- Check all positions in the tree to find children
+        for _, potential_child in tree:iter() do
+          if potential_child and results[potential_child.id] then
+            -- Check if this is a child by seeing if the ID starts with parent ID
+            if potential_child.id:sub(1, #position.id) == position.id and potential_child.id ~= position.id then
+              has_any_result = true
+              if results[potential_child.id].status == STATUS_FAILED then
+                has_failure = true
+              end
+            end
           end
         end
-      end
 
-      -- Only set result if we have any child results
-      if has_any_result then
-        local status = has_failure and STATUS_FAILED or STATUS_PASSED
-        results[data.id] = { status = status }
-        return status
+        -- Only set result if we have child results
+        if has_any_result then
+          results[position.id] = {
+            status = has_failure and STATUS_FAILED or STATUS_PASSED
+          }
+        end
       end
     end
-
-    return nil
   end
-
-  -- Start aggregation from the root
-  aggregate_results(tree)
 
   return results
 end
