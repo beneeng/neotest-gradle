@@ -81,6 +81,9 @@ end
 --- also be a whole file. In that case the paths are unknown and must be
 --- collected by some additional logic.
 ---
+--- Note: No quotes around position.id since we're using command arrays.
+--- Shell escaping is handled automatically by the process runner.
+---
 --- @param tree table - see neotest.Tree
 --- @param position table - see neotest.Position
 --- @return string[] - list of strings for arguments
@@ -88,12 +91,12 @@ local function get_test_filter_arguments(tree, position)
   local arguments = {}
 
   if position.type == 'test' or position.type == 'namespace' then
-    vim.list_extend(arguments, { '--tests', "'" .. position.id .. "'" })
+    vim.list_extend(arguments, { '--tests', position.id })
   elseif position.type == 'file' then
     local namespaces = get_namespaces_of_tree(tree)
 
     for _, namespace in pairs(namespaces) do
-      vim.list_extend(arguments, { '--tests', "'" .. namespace.id .. "'" })
+      vim.list_extend(arguments, { '--tests', namespace.id })
     end
   end
 
