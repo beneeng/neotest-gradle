@@ -96,6 +96,40 @@ local function get_test_filter_arguments(tree, position)
   return arguments
 end
 
+--- Builds the DAP configuration for debugging Gradle tests with kotlin-debug-adapter
+--- or other JVM debug adapters.
+---
+--- @param gradle_executable string
+--- @param project_directory string
+--- @param test_filter_args string[]
+--- @return table - DAP configuration
+local function build_dap_config(gradle_executable, project_directory, test_filter_args)
+  local config = require('neotest-gradle').config
+
+  -- Build the Gradle command for debugging
+  local debug_args = {
+    '--project-dir',
+    project_directory,
+    'test',
+    '--debug-jvm'  -- This makes Gradle wait for a debugger to attach
+  }
+  vim.list_extend(debug_args, test_filter_args)
+
+  return {
+    type = config.dap_adapter_type,
+    request = 'attach',
+    name = 'Attach to Gradle Test',
+    hostName = 'localhost',
+    port = config.dap_port,
+    timeout = 30000,
+    preLaunchTask = {
+      type = 'shell',
+      command = gradle_executable,
+      args = debug_args,
+    }
+  }
+end
+
 --- See Neotest adapter specification.
 ---
 --- In its core, it builds a command to start Gradle correctly in the project
@@ -103,17 +137,38 @@ end
 --- It also determines the folder where the resulsts will be reported to, to
 --- collect them later on. That folder path is saved to the context object.
 ---
+--- Supports both integrated and DAP strategies for running/debugging tests.
+---
 --- @param arguments table - see neotest.RunArgs
 --- @return nil | table | table[] - see neotest.RunSpec[]
 return function(arguments)
   local position = arguments.tree:data()
   local project_directory = find_project_directory(position.path)
   local gradle_executable = get_gradle_executable(project_directory)
-  local command = { gradle_executable, '--project-dir', project_directory, 'test' }
-  vim.list_extend(command, get_test_filter_arguments(arguments.tree, position))
+  local test_filter_args = get_test_filter_arguments(arguments.tree, position)
 
   local context = {}
   context.test_resuls_directory = get_test_results_directory(gradle_executable, project_directory)
 
-  return { command = table.concat(command, ' '), context = context }
+  -- Determine which strategy to use
+  local strategy = arguments.strategy or 'integrated'
+
+  if strategy == 'dap' then
+    -- For DAP debugging strategy
+    local dap_config = build_dap_config(gradle_executable, project_directory, test_filter_args)
+    return {
+      strategy = dap_config,
+      context = context,
+    }
+  else
+    -- For integrated (default) strategy
+    local command = { gradle_executable, '--project-dir', project_directory, 'test' }
+    vim.list_extend(command, test_filter_args)
+
+    return {
+      command = command,  -- Return as array, not string
+      strategy = 'integrated',
+      context = context,
+    }
+  end
 end

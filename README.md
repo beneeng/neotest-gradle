@@ -23,12 +23,59 @@ adatper to Neotest.
 ```lua
 require('neotest').setup({
     adapters = {
+        -- Default configuration
         require('neotest-gradle'),
+
+        -- Or with custom configuration
+        require('neotest-gradle')({
+            dap_adapter_type = 'kotlin',  -- or 'java'
+            dap_port = 5005,              -- Debug port (default: 5005)
+        }),
+
         -- more adapters ...
     },
     -- more configuration ...
 })
 ```
+</details>
+
+<details>
+<summary>DAP Debug Configuration</summary>
+
+To enable debugging support, you need to:
+
+1. Install a JVM debug adapter like [kotlin-debug-adapter](https://github.com/fwcd/kotlin-debug-adapter)
+2. Configure nvim-dap with the adapter:
+
+```lua
+local dap = require('dap')
+
+dap.adapters.kotlin = {
+  type = 'executable',
+  command = 'kotlin-debug-adapter',  -- Ensure this is in your PATH
+  args = {},
+}
+
+-- Optional: Configure dap.configurations.kotlin if needed
+```
+
+3. Run tests in debug mode:
+
+```lua
+-- Debug the nearest test
+:lua require('neotest').run.run({strategy = 'dap'})
+
+-- Or map it to a key
+vim.keymap.set('n', '<leader>td', function()
+  require('neotest').run.run({strategy = 'dap'})
+end, { desc = 'Debug nearest test' })
+```
+
+The adapter will automatically:
+- Start Gradle with `--debug-jvm` flag
+- Wait for the debugger to attach on port 5005
+- Run the selected test(s) with breakpoint support
+
 </details>
 
 # Supported Features
@@ -38,10 +85,10 @@ require('neotest').setup({
 - test description annotations
 - nested test classes
 
-**Planned:**
-- debugging strategy support using for example the
-  [kotlin-debug-adapter](https://github.com/fwcd/kotlin-debug-adapter) (still
-  unreliable and highly experimental on local setup)
+**Debugging Support:**
+- ✅ DAP (Debug Adapter Protocol) strategy support
+- Compatible with [kotlin-debug-adapter](https://github.com/fwcd/kotlin-debug-adapter) and other JVM debug adapters
+- Use `:lua require('neotest').run.run({strategy = 'dap'})` to debug tests
 
 # Contribution
 
