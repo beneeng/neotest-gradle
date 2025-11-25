@@ -162,12 +162,12 @@ return function(arguments)
     }
   else
     -- For integrated (default) strategy
+    -- Don't set strategy field - neotest will use default integrated strategy
     local command = { gradle_executable, '--project-dir', project_directory, 'test' }
     vim.list_extend(command, test_filter_args)
 
     return {
       command = command,  -- Return as array, not string
-      strategy = 'integrated',
       context = context,
     }
   end
