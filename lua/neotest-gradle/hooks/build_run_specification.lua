@@ -61,13 +61,19 @@ local function get_test_results_directory(gradle_executable, project_directory)
   for _, line in pairs(output_lines) do
     if line:match('testResultsDir: ') then
       local test_results_dir = line:gsub('testResultsDir: ', '')
-      if test_results_dir ~= '' then
+      -- Check if value is valid (not empty, not 'null' string, not 'nil' string)
+      if test_results_dir ~= '' and test_results_dir ~= 'null' and test_results_dir ~= 'nil' then
         local full_path = test_results_dir .. lib.files.sep .. 'test'
         vim.notify(
           string.format('[neotest-gradle] Using testResultsDir from Gradle: %s', full_path),
           vim.log.levels.INFO
         )
         return full_path
+      else
+        vim.notify(
+          string.format('[neotest-gradle] testResultsDir from Gradle is invalid: "%s", using fallback', test_results_dir),
+          vim.log.levels.WARN
+        )
       end
     end
   end
