@@ -28,22 +28,8 @@ end
 --- @param project_directory string
 --- @return string - absolute path of test results directory
 local function get_test_results_directory(gradle_executable, project_directory)
-  -- Debug logging
-  vim.notify(
-    string.format('[neotest-gradle] Project directory: %s', project_directory or 'nil'),
-    vim.log.levels.INFO
-  )
-  vim.notify(
-    string.format('[neotest-gradle] Gradle executable: %s', gradle_executable or 'nil'),
-    vim.log.levels.INFO
-  )
-
   -- Safety check for nil project_directory
   if not project_directory or project_directory == '' then
-    vim.notify(
-      '[neotest-gradle] ERROR: project_directory is nil or empty!',
-      vim.log.levels.ERROR
-    )
     return ''
   end
 
@@ -63,28 +49,13 @@ local function get_test_results_directory(gradle_executable, project_directory)
       local test_results_dir = line:gsub('testResultsDir: ', '')
       -- Check if value is valid (not empty, not 'null' string, not 'nil' string)
       if test_results_dir ~= '' and test_results_dir ~= 'null' and test_results_dir ~= 'nil' then
-        local full_path = test_results_dir .. lib.files.sep .. 'test'
-        vim.notify(
-          string.format('[neotest-gradle] Using testResultsDir from Gradle: %s', full_path),
-          vim.log.levels.INFO
-        )
-        return full_path
-      else
-        vim.notify(
-          string.format('[neotest-gradle] testResultsDir from Gradle is invalid: "%s", using fallback', test_results_dir),
-          vim.log.levels.WARN
-        )
+        return test_results_dir .. lib.files.sep .. 'test'
       end
     end
   end
 
   -- Fallback to standard Gradle test results directory
-  local fallback_path = project_directory .. lib.files.sep .. 'build' .. lib.files.sep .. 'test-results' .. lib.files.sep .. 'test'
-  vim.notify(
-    string.format('[neotest-gradle] Using fallback test results directory: %s', fallback_path),
-    vim.log.levels.INFO
-  )
-  return fallback_path
+  return project_directory .. lib.files.sep .. 'build' .. lib.files.sep .. 'test-results' .. lib.files.sep .. 'test'
 end
 
 --- Takes a NeoTest tree object and iterate over its positions. For each position
@@ -185,21 +156,7 @@ end
 --- @return nil | table | table[] - see neotest.RunSpec[]
 return function(arguments)
   local position = arguments.tree:data()
-
-  -- Debug logging
-  vim.notify(
-    string.format('[neotest-gradle] Position path: %s', position.path or 'nil'),
-    vim.log.levels.INFO
-  )
-
   local project_directory = find_project_directory(position.path)
-
-  -- Debug logging
-  vim.notify(
-    string.format('[neotest-gradle] Found project directory: %s', project_directory or 'nil'),
-    vim.log.levels.INFO
-  )
-
   local gradle_executable = get_gradle_executable(project_directory)
   local test_filter_args = get_test_filter_arguments(arguments.tree, position)
 
