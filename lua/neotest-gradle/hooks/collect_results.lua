@@ -8,10 +8,16 @@ local STATUS_FAILED = 'failed' --- see neotest.Result.status
 
 --- Searches for all files XML files in this directory (not recursive) and
 --- parses their content as Lua tables using some Neotest utility.
+--- Returns an empty table if the directory doesn't exist.
 ---
 --- @param directory_path string
 --- @return table[] - list of parsed XML tables
 local function parse_xml_files_from_directory(directory_path)
+  -- Check if directory exists
+  if not directory_path or directory_path == '' or not vim.loop.fs_stat(directory_path) then
+    return {}
+  end
+
   local xml_files = lib.files.find(directory_path, {
     filter_dir = function(file_name)
       return file_name:sub(-#XML_FILE_SUFFIX) == XML_FILE_SUFFIX

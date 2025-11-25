@@ -22,7 +22,7 @@ end
 --- query the `testResultsDir` property. Has to do so some plain text parsing of
 --- the Gradle command output. The child folder named `test` is always added to
 --- this path.
---- Is empty is directory could not be determined.
+--- Falls back to standard Gradle test results directory if property cannot be determined.
 ---
 --- @param gradle_executable string
 --- @param project_directory string
@@ -41,11 +41,15 @@ local function get_test_results_directory(gradle_executable, project_directory)
 
   for _, line in pairs(output_lines) do
     if line:match('testResultsDir: ') then
-      return line:gsub('testResultsDir: ', '') .. lib.files.sep .. 'test'
+      local test_results_dir = line:gsub('testResultsDir: ', '')
+      if test_results_dir ~= '' then
+        return test_results_dir .. lib.files.sep .. 'test'
+      end
     end
   end
 
-  return ''
+  -- Fallback to standard Gradle test results directory
+  return project_directory .. lib.files.sep .. 'build' .. lib.files.sep .. 'test-results' .. lib.files.sep .. 'test'
 end
 
 --- Takes a NeoTest tree object and iterate over its positions. For each position
