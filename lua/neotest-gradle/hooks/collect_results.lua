@@ -118,44 +118,18 @@ return function(build_specfication, _, tree)
 
   local juris_reports = parse_xml_files_from_directory(results_directory)
 
-  -- Debug: Log all position IDs in the tree
-  vim.notify('[neotest-gradle] === Position IDs in tree ===', vim.log.levels.INFO)
-  for _, pos in tree:iter() do
-    if pos then
-      vim.notify(string.format('  %s (type: %s)', pos.id, pos.type), vim.log.levels.INFO)
-    end
-  end
-
   -- Collect results for individual test positions
   for _, juris_report in pairs(juris_reports) do
     for _, test_suite_node in pairs(asList(juris_report.testsuite)) do
       for _, test_case_node in pairs(asList(test_suite_node.testcase)) do
-        local test_name = test_case_node._attr.name:gsub('%(.*%)$', '')
-        local class_name = test_case_node._attr.classname
-        local failure_node = test_case_node.failure
-        local xml_status = failure_node == nil and STATUS_PASSED or STATUS_FAILED
-
-        vim.notify(
-          string.format('[neotest-gradle] XML Test: %s.%s -> %s', class_name, test_name, xml_status),
-          vim.log.levels.INFO
-        )
-
         local matched_position = find_position_for_test_case(tree, test_case_node)
         if matched_position ~= nil then
-          vim.notify(
-            string.format('[neotest-gradle] ✓ Matched to position: %s', matched_position.id),
-            vim.log.levels.INFO
-          )
+          local failure_node = test_case_node.failure
           local status = failure_node == nil and STATUS_PASSED or STATUS_FAILED
           local short_message = (failure_node or {}).message
           local error = failure_node and parse_error_from_failure_xml(failure_node, matched_position)
           local result = { status = status, short = short_message, errors = { error } }
           results[matched_position.id] = result
-        else
-          vim.notify(
-            string.format('[neotest-gradle] ✗ No match found for: %s.%s', class_name, test_name),
-            vim.log.levels.WARN
-          )
         end
       end
     end
