@@ -132,15 +132,45 @@ return function(arguments)
   -- Build the Gradle command
   local command = { gradle_executable, '--project-dir', project_directory, 'test' }
 
-  -- Add --debug-jvm for DAP debugging
-  if arguments.strategy == 'dap' then
-    table.insert(command, '--debug-jvm')
-  end
-
   vim.list_extend(command, test_filter_args)
 
   -- Handle DAP debugging strategy
   if arguments.strategy == 'dap' then
+    -- Create a temporary Gradle init script that configures test JVM for debugging
+    -- This is necessary because --debug-jvm debugs Gradle itself, not the test JVM
+    local init_script_content = [[
+allprojects {
+  tasks.withType(Test) {
+    jvmArgs '-agentlib:jdwp=transport=dt_socket,server=y,suspend=y,address=5005'
+  }
+}
+]]
+
+    -- Create temporary init script file
+    local init_script_path = os.tmpname()
+    local init_file = io.open(init_script_path, 'w')
+    if not init_file then
+      error('Failed to create temporary Gradle init script')
+    end
+    init_file:write(init_script_content)
+    init_file:close()
+
+    print('DEBUG: Created init script at: ' .. init_script_path)
+
+    -- Insert init-script argument before 'test' task
+    local test_index = nil
+    for i, arg in ipairs(command) do
+      if arg == 'test' then
+        test_index = i
+        break
+      end
+    end
+
+    if test_index then
+      table.insert(command, test_index, init_script_path)
+      table.insert(command, test_index, '--init-script')
+    end
+
     -- Build the full Gradle command as a properly escaped string
     local gradle_cmd_parts = {}
     for _, part in ipairs(command) do
@@ -165,6 +195,8 @@ return function(arguments)
     print('DEBUG: Received PID: ' .. tostring(pid))
 
     if not pid or pid == '' then
+      -- Clean up init script
+      os.remove(init_script_path)
       error('Failed to start Gradle process for DAP debugging')
     end
 
@@ -205,20 +237,23 @@ return function(arguments)
     if not port_ready then
       -- Kill the Gradle process since port didn't open
       os.execute('kill ' .. pid .. ' 2>/dev/null')
-      error('Timeout: Gradle debug port 5005 did not open within 10 seconds. Check if --debug-jvm is the correct flag for your Gradle version.')
+      os.remove(init_script_path)
+      error('Timeout: Gradle debug port 5005 did not open within 10 seconds')
     end
 
     print('DEBUG: Returning RunSpec with wait command')
 
     -- Gradle is running and port is ready, return RunSpec with command that waits for Gradle
     -- The command just monitors the Gradle process until it completes
+    -- Also clean up the init script when done
     local wait_script = string.format([[
       echo "Gradle is running (PID %s), waiting for completion..."
       while kill -0 %s 2>/dev/null; do
         sleep 0.5
       done
       echo "Gradle process completed"
-    ]], pid, pid)
+      rm -f %s
+    ]], pid, pid, init_script_path)
 
     return {
       command = {'sh', '-c', wait_script},
