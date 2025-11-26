@@ -210,7 +210,8 @@ allprojects {
     local port_ready = false
     for i = 1, 100 do  -- 10 seconds total (100 * 0.1s)
       -- Check both port AND if Gradle process is still running
-      local port_check = os.execute('timeout 0.1 bash -c "echo >/dev/tcp/localhost/5005" 2>/dev/null')
+      -- Use nc (netcat) instead of timeout for macOS compatibility
+      local port_check = os.execute('nc -z -G 1 localhost 5005 2>/dev/null')
       local proc_alive = os.execute('kill -0 ' .. pid .. ' 2>/dev/null')
 
       if i % 10 == 0 then  -- Print every second
