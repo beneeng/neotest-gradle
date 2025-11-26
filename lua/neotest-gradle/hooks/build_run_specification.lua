@@ -150,37 +150,65 @@ return function(arguments)
     end
     local gradle_cmd = table.concat(gradle_cmd_parts, ' ')
 
+    print('DEBUG: Full Gradle command: ' .. gradle_cmd)
+    print('DEBUG: build_spec() is being called - about to start Gradle')
+
     -- Start Gradle in background and capture PID
     -- IMPORTANT: This happens BEFORE returning RunSpec, so it blocks here
     local start_cmd = gradle_cmd .. ' & echo $!'
+    print('DEBUG: Executing: ' .. start_cmd)
+
     local handle = io.popen(start_cmd)
     local pid = handle:read('*l')
     handle:close()
 
+    print('DEBUG: Received PID: ' .. tostring(pid))
+
     if not pid or pid == '' then
       error('Failed to start Gradle process for DAP debugging')
     end
+
+    -- Check if process actually started
+    local process_check = os.execute('ps -p ' .. pid .. ' > /dev/null 2>&1')
+    print('DEBUG: Process check result: ' .. tostring(process_check))
 
     -- Synchronous port polling - BLOCKS here until port is ready or timeout
     -- This ensures DAP will only start AFTER the port is available
     print('Starting Gradle with PID ' .. pid .. ', waiting for debug port 5005...')
     local port_ready = false
     for i = 1, 100 do  -- 10 seconds total (100 * 0.1s)
-      local check_result = os.execute('timeout 0.1 bash -c "echo >/dev/tcp/localhost/5005" 2>/dev/null')
+      -- Check both port AND if Gradle process is still running
+      local port_check = os.execute('timeout 0.1 bash -c "echo >/dev/tcp/localhost/5005" 2>/dev/null')
+      local proc_alive = os.execute('kill -0 ' .. pid .. ' 2>/dev/null')
+
+      if i % 10 == 0 then  -- Print every second
+        print(string.format('DEBUG: Attempt %d/100 - Port check: %s, Process alive: %s',
+          i, tostring(port_check), tostring(proc_alive)))
+      end
+
       -- Handle different Lua version return values (boolean in 5.2+, number in 5.1)
-      if check_result == 0 or check_result == true then
+      if port_check == 0 or port_check == true then
         port_ready = true
         print('Port 5005 is ready - DAP can now attach')
         break
       end
+
+      -- If Gradle process died, stop polling
+      if not (proc_alive == 0 or proc_alive == true) then
+        print('WARNING: Gradle process ' .. pid .. ' is not running anymore!')
+        break
+      end
+
       os.execute('sleep 0.1')
     end
 
     if not port_ready then
       -- Kill the Gradle process since port didn't open
       os.execute('kill ' .. pid .. ' 2>/dev/null')
-      error('Timeout: Gradle debug port 5005 did not open within 10 seconds')
+      error('Timeout: Gradle debug port 5005 did not open within 10 seconds. Check if --debug-jvm is the correct flag for your Gradle version.')
     end
+
+    print('DEBUG: Returning RunSpec with wait command')
 
     -- Gradle is running and port is ready, return RunSpec with command that waits for Gradle
     -- The command just monitors the Gradle process until it completes
