@@ -150,40 +150,50 @@ return function(arguments)
     end
     local gradle_cmd = table.concat(gradle_cmd_parts, ' ')
 
-    -- Create wrapper script that:
-    -- 1. Starts Gradle with --debug-jvm in background
-    -- 2. Polls port 5005 for up to 10 seconds
-    -- 3. Waits for Gradle completion
-    -- 4. Returns Gradle's exit code
-    local wrapper_script = string.format([[
-      %s &
-      GRADLE_PID=$!
+    -- Start Gradle in background and capture PID
+    -- IMPORTANT: This happens BEFORE returning RunSpec, so it blocks here
+    local start_cmd = gradle_cmd .. ' & echo $!'
+    local handle = io.popen(start_cmd)
+    local pid = handle:read('*l')
+    handle:close()
 
-      # Poll for port 5005 (max 10 seconds = 100 attempts * 0.1s)
-      echo "Waiting for Gradle debug port 5005..."
-      PORT_READY=0
-      for i in $(seq 1 100); do
-        if timeout 0.1 bash -c "echo >/dev/tcp/localhost/5005" 2>/dev/null; then
-          echo "Port 5005 is ready - DAP can attach now"
-          PORT_READY=1
-          break
-        fi
-        sleep 0.1
+    if not pid or pid == '' then
+      error('Failed to start Gradle process for DAP debugging')
+    end
+
+    -- Synchronous port polling - BLOCKS here until port is ready or timeout
+    -- This ensures DAP will only start AFTER the port is available
+    print('Starting Gradle with PID ' .. pid .. ', waiting for debug port 5005...')
+    local port_ready = false
+    for i = 1, 100 do  -- 10 seconds total (100 * 0.1s)
+      local check_result = os.execute('timeout 0.1 bash -c "echo >/dev/tcp/localhost/5005" 2>/dev/null')
+      -- Handle different Lua version return values (boolean in 5.2+, number in 5.1)
+      if check_result == 0 or check_result == true then
+        port_ready = true
+        print('Port 5005 is ready - DAP can now attach')
+        break
+      end
+      os.execute('sleep 0.1')
+    end
+
+    if not port_ready then
+      -- Kill the Gradle process since port didn't open
+      os.execute('kill ' .. pid .. ' 2>/dev/null')
+      error('Timeout: Gradle debug port 5005 did not open within 10 seconds')
+    end
+
+    -- Gradle is running and port is ready, return RunSpec with command that waits for Gradle
+    -- The command just monitors the Gradle process until it completes
+    local wait_script = string.format([[
+      echo "Gradle is running (PID %s), waiting for completion..."
+      while kill -0 %s 2>/dev/null; do
+        sleep 0.5
       done
-
-      if [ $PORT_READY -eq 0 ]; then
-        echo "WARNING: Port 5005 did not open within 10 seconds"
-      fi
-
-      # Wait for Gradle to complete
-      wait $GRADLE_PID
-      EXIT_CODE=$?
-      echo "Gradle finished with exit code: $EXIT_CODE"
-      exit $EXIT_CODE
-    ]], gradle_cmd)
+      echo "Gradle process completed"
+    ]], pid, pid)
 
     return {
-      command = {'sh', '-c', wrapper_script},
+      command = {'sh', '-c', wait_script},
       context = context,
       strategy = {
         type = 'kotlin',
