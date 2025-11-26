@@ -65,13 +65,17 @@ end, { desc = 'Debug nearest test' })
 ```
 
 **How it works:**
-- The adapter automatically starts Gradle with `--debug-jvm` flag
-- Gradle waits for debugger on port 5005
-- neotest launches your DAP adapter with the correct configuration
+- The adapter automatically starts Gradle with `--debug-jvm` flag in the background
+- Built-in port polling waits up to 10 seconds for port 5005 to be ready
+- Once the port is available, DAP adapter attaches to the Gradle process
 - Tests run with full debugging support (breakpoints, stepping, etc.)
+- Completely hands-free: just run the test and everything happens automatically
 
-**Note:** The DAP configuration includes `projectRoot` which is required
-by kotlin-debug-adapter to properly resolve source files.
+**Technical details:**
+- The adapter uses a wrapper script that polls port 5005 every 100ms for up to 10 seconds
+- This ensures reliable DAP attachment even with slower Gradle startup times
+- The `projectRoot` configuration is included for kotlin-debug-adapter to properly resolve source files
+- Exit codes are properly propagated from Gradle to neotest
 
 </details>
 
