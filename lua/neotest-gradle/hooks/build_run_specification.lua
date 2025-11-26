@@ -203,64 +203,42 @@ allprojects {
 
     print('DEBUG: Started Gradle with PID: ' .. gradle_pid)
 
-    -- Helper function to check if TCP port is open using vim.loop (platform-independent)
-    local function check_port_open(host, port, timeout_ms)
-      local tcp = vim.loop.new_tcp()
-      if not tcp then
-        return false
-      end
-
-      local connected = false
-      local finished = false
-
-      tcp:connect(host, port, function(err)
-        connected = not err
-        finished = true
-        tcp:close()
-      end)
-
-      -- Wait for connection attempt to complete
-      vim.wait(timeout_ms or 100, function()
-        return finished
-      end, 10)
-
-      if not finished then
-        tcp:close()
-      end
-
-      return connected
-    end
-
     -- Helper function to check if process is alive (platform-independent)
     local function is_process_alive(pid)
       local success = pcall(vim.loop.kill, pid, 0)
       return success
     end
 
-    -- Synchronous port polling using vim.wait - BLOCKS until port is ready or timeout
+    -- Synchronous port polling using os.execute - compatible with fast event context
     -- This ensures DAP will only start AFTER the port is available
     print('Starting Gradle with PID ' .. gradle_pid .. ', waiting for debug port 5005...')
 
-    local attempt = 0
-    local port_ready = vim.wait(10000, function()  -- 10 seconds timeout
-      attempt = attempt + 1
-
+    local port_ready = false
+    for i = 1, 100 do  -- 10 seconds total (100 * 0.1s)
       -- Check if Gradle process died
       if gradle_exited or not is_process_alive(gradle_pid) then
         print('WARNING: Gradle process ' .. gradle_pid .. ' is not running anymore!')
-        return true  -- Stop waiting
+        break
       end
 
-      -- Check if port is open
-      local port_open = check_port_open('localhost', 5005, 100)
+      -- Check if port is open using nc (netcat)
+      -- Note: Using os.execute instead of vim.wait to avoid fast event context issues
+      local port_check = os.execute('nc -z -G 1 localhost 5005 2>/dev/null')
 
-      if attempt % 10 == 0 then  -- Print every ~1 second
-        print(string.format('DEBUG: Attempt %d - Port open: %s, Process alive: %s',
-          attempt, tostring(port_open), tostring(is_process_alive(gradle_pid))))
+      if i % 10 == 0 then  -- Print every ~1 second
+        print(string.format('DEBUG: Attempt %d/100 - Port check: %s, Process alive: %s',
+          i, tostring(port_check), tostring(is_process_alive(gradle_pid))))
       end
 
-      return port_open
-    end, 100)  -- Check every 100ms
+      -- Handle different Lua version return values (boolean in 5.2+, number in 5.1)
+      if port_check == 0 or port_check == true then
+        port_ready = true
+        print('Port 5005 is ready - DAP can now attach')
+        break
+      end
+
+      os.execute('sleep 0.1')
+    end
 
     if not port_ready then
       -- Kill the Gradle process since port didn't open
@@ -268,8 +246,6 @@ allprojects {
       os.remove(init_script_path)
       error('Timeout: Gradle debug port 5005 did not open within 10 seconds')
     end
-
-    print('Port 5005 is ready - DAP can now attach')
     print('DEBUG: Returning RunSpec with wait command')
 
     -- Gradle is running and port is ready, return RunSpec with command that waits for Gradle
