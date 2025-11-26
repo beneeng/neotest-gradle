@@ -221,9 +221,9 @@ allprojects {
         break
       end
 
-      -- Check if port is open using nc (netcat)
+      -- Check if port is open using bash's built-in /dev/tcp
       -- Note: Using os.execute instead of vim.wait to avoid fast event context issues
-      local port_check = os.execute('nc -z -G 1 localhost 5005 2>/dev/null')
+      local port_check = os.execute('(echo > /dev/tcp/localhost/5005) 2>/dev/null')
 
       if i % 10 == 0 then  -- Print every ~1 second
         print(string.format('DEBUG: Attempt %d/100 - Port check: %s, Process alive: %s',
