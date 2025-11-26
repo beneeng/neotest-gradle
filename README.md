@@ -23,15 +23,7 @@ adatper to Neotest.
 ```lua
 require('neotest').setup({
     adapters = {
-        -- Default configuration
         require('neotest-gradle'),
-
-        -- Or with custom configuration
-        require('neotest-gradle')({
-            dap_adapter_type = 'kotlin',  -- or 'java'
-            dap_port = 5005,              -- Debug port (default: 5005)
-        }),
-
         -- more adapters ...
     },
     -- more configuration ...
@@ -42,39 +34,56 @@ require('neotest').setup({
 <details>
 <summary>DAP Debug Configuration</summary>
 
-To enable debugging support, you need to:
+To enable debugging support:
 
 1. Install a JVM debug adapter like [kotlin-debug-adapter](https://github.com/fwcd/kotlin-debug-adapter)
-2. Configure nvim-dap with the adapter:
+
+2. Configure nvim-dap:
 
 ```lua
 local dap = require('dap')
 
 dap.adapters.kotlin = {
-  type = 'executable',
-  command = 'kotlin-debug-adapter',  -- Ensure this is in your PATH
-  args = {},
+  type = 'server',
+  host = 'localhost',
+  port = 5005,
 }
 
--- Optional: Configure dap.configurations.kotlin if needed
+dap.configurations.kotlin = {
+  {
+    type = 'kotlin',
+    request = 'attach',
+    name = 'Attach to Gradle Test',
+    hostName = 'localhost',
+    port = 5005,
+  }
+}
 ```
 
-3. Run tests in debug mode:
+3. Debugging workflow:
 
 ```lua
--- Debug the nearest test
+-- Step 1: Start test with DAP strategy (this starts Gradle with --debug-jvm)
 :lua require('neotest').run.run({strategy = 'dap'})
 
--- Or map it to a key
+-- Step 2: Gradle will wait for debugger on port 5005
+-- Step 3: Attach your debugger:
+:lua require('dap').continue()
+
+-- Or create a keymap for the complete flow
 vim.keymap.set('n', '<leader>td', function()
   require('neotest').run.run({strategy = 'dap'})
+  vim.defer_fn(function()
+    require('dap').continue()
+  end, 1000)  -- Wait 1s for Gradle to start
 end, { desc = 'Debug nearest test' })
 ```
 
-The adapter will automatically:
-- Start Gradle with `--debug-jvm` flag
-- Wait for the debugger to attach on port 5005
-- Run the selected test(s) with breakpoint support
+**How it works:**
+- `strategy = 'dap'` adds `--debug-jvm` flag to Gradle
+- Gradle starts and waits for debugger on port 5005
+- You attach your DAP client to port 5005
+- Tests run with full debugging support
 
 </details>
 

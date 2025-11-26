@@ -109,40 +109,6 @@ local function get_test_filter_arguments(tree, position)
   return arguments
 end
 
---- Builds the DAP configuration for debugging Gradle tests with kotlin-debug-adapter
---- or other JVM debug adapters.
----
---- @param gradle_executable string
---- @param project_directory string
---- @param test_filter_args string[]
---- @return table - DAP configuration
-local function build_dap_config(gradle_executable, project_directory, test_filter_args)
-  local config = require('neotest-gradle').config
-
-  -- Build the Gradle command for debugging
-  local debug_args = {
-    '--project-dir',
-    project_directory,
-    'test',
-    '--debug-jvm'  -- This makes Gradle wait for a debugger to attach
-  }
-  vim.list_extend(debug_args, test_filter_args)
-
-  return {
-    type = config.dap_adapter_type,
-    request = 'attach',
-    name = 'Attach to Gradle Test',
-    hostName = 'localhost',
-    port = config.dap_port,
-    timeout = 30000,
-    preLaunchTask = {
-      type = 'shell',
-      command = gradle_executable,
-      args = debug_args,
-    }
-  }
-end
-
 --- See Neotest adapter specification.
 ---
 --- In its core, it builds a command to start Gradle correctly in the project
@@ -163,25 +129,26 @@ return function(arguments)
   local context = {}
   context.test_results_directory = get_test_results_directory(gradle_executable, project_directory)
 
-  -- Determine which strategy to use
-  local strategy = arguments.strategy or 'integrated'
+  -- Build the Gradle command
+  local command = { gradle_executable, '--project-dir', project_directory, 'test' }
 
-  if strategy == 'dap' then
-    -- For DAP debugging strategy
-    local dap_config = build_dap_config(gradle_executable, project_directory, test_filter_args)
-    return {
-      strategy = dap_config,
-      context = context,
-    }
-  else
-    -- For integrated (default) strategy
-    -- Don't set strategy field - neotest will use default integrated strategy
-    local command = { gradle_executable, '--project-dir', project_directory, 'test' }
-    vim.list_extend(command, test_filter_args)
+  -- Add --debug-jvm for DAP debugging if requested
+  if arguments.strategy == 'dap' then
+    table.insert(command, '--debug-jvm')
 
-    return {
-      command = command,  -- Return as array, not string
-      context = context,
-    }
+    -- Notify user to attach debugger
+    vim.notify(
+      '[neotest-gradle] Gradle test started with --debug-jvm\n' ..
+      'Waiting for debugger to attach on port 5005\n' ..
+      'Use your DAP configuration to attach now!',
+      vim.log.levels.INFO
+    )
   end
+
+  vim.list_extend(command, test_filter_args)
+
+  return {
+    command = command,
+    context = context,
+  }
 end

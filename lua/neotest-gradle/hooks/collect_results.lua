@@ -168,5 +168,20 @@ return function(build_specfication, _, tree)
     end
   end
 
+  -- Mark tests without results as failed (e.g., when DAP fails or no XML generated)
+  -- This ensures tests don't silently pass when something goes wrong
+  for _, position in tree:iter() do
+    if position and position.type == 'test' and not results[position.id] then
+      results[position.id] = {
+        status = STATUS_FAILED,
+        errors = {
+          {
+            message = 'No test result found. Test may not have executed or DAP debugging failed.',
+          }
+        }
+      }
+    end
+  end
+
   return results
 end
