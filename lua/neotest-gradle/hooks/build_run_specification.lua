@@ -146,12 +146,12 @@ return function(arguments)
       context = context,
       strategy = {
         type = 'kotlin',
-        request = 'launch',
-        name = 'Debug Gradle Test',
+        request = 'attach',  -- Attach to already running Gradle process
+        name = 'Attach to Gradle Test',
         projectRoot = project_directory,
-        mainClass = '',
         hostName = 'localhost',
         port = 5005,
+        timeout = 30000,
       }
     }
   end
