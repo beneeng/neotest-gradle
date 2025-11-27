@@ -132,6 +132,12 @@ return function(arguments)
   -- Build the Gradle command
   local command = { gradle_executable, '--project-dir', project_directory, 'test' }
 
+  -- For DAP debugging, force re-run of tests even if they're up-to-date
+  -- Otherwise Gradle may skip test execution entirely, preventing debug port from opening
+  if arguments.strategy == 'dap' then
+    table.insert(command, '--rerun-tasks')
+  end
+
   vim.list_extend(command, test_filter_args)
 
   -- Handle DAP debugging strategy
