@@ -298,8 +298,6 @@ allprojects {
         sleep 0.5
       done
       echo "Gradle process completed"
-      # Clean up any remaining processes on port 5005
-      lsof -ti:5005 2>/dev/null | xargs kill -9 2>/dev/null || true
       rm -f %s
     ]], pid, pid, init_script_path)
 
