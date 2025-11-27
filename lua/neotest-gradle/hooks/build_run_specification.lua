@@ -211,6 +211,7 @@ allprojects {
     -- This ensures DAP will only start AFTER the port is available
     print('Starting Gradle with PID ' .. pid .. ', waiting for debug port 5005...')
     local port_ready = false
+    local dap_attached = false
     for i = 1, 100 do  -- 10 seconds total (100 * 0.1s)
       -- Check both port AND if Gradle process is still running
       -- Use nc (netcat) for macOS compatibility
@@ -224,15 +225,24 @@ allprojects {
 
       -- Handle different Lua version return values (boolean in 5.2+, number in 5.1)
       if port_check == 0 or port_check == true then
+        dap_attached = true
         port_ready = true
         print('Port 5005 is ready - DAP can now attach')
         break
       end
 
-      -- If Gradle process died, stop polling
+      -- If Gradle process died, check if DAP was already attached
       if not (proc_alive == 0 or proc_alive == true) then
-        print('WARNING: Gradle process ' .. pid .. ' is not running anymore!')
-        break
+        if dap_attached then
+          -- Process ended after DAP attached - this is OK (test completed quickly)
+          print('Gradle process ended after DAP attached (test may have completed)')
+          port_ready = true
+          break
+        else
+          -- Process died before port was ready - this is an error
+          print('WARNING: Gradle process ' .. pid .. ' died before port 5005 was ready!')
+          break
+        end
       end
 
       os.execute('sleep 0.1')
