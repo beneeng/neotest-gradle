@@ -184,8 +184,8 @@ allprojects {
     print('DEBUG: build_spec() is being called - about to start Gradle')
 
     -- Start Gradle in background and capture PID
-    -- IMPORTANT: This happens BEFORE returning RunSpec, so it blocks here
-    local start_cmd = gradle_cmd .. ' & echo $!'
+    -- Use nohup to detach from shell so process survives handle:close()
+    local start_cmd = 'nohup ' .. gradle_cmd .. ' > /dev/null 2>&1 & echo $!'
     print('DEBUG: Executing: ' .. start_cmd)
 
     local handle = io.popen(start_cmd)
