@@ -137,21 +137,31 @@ return function(arguments)
   if arguments.strategy == 'dap' then
     table.insert(command, '--rerun-tasks')     -- Force re-run tests even if up-to-date
     table.insert(command, '--no-build-cache')  -- Disable build cache to always recompile
+    table.insert(command, '--no-daemon')       -- Don't use daemon for clean process lifecycle
   end
 
   vim.list_extend(command, test_filter_args)
 
   -- Handle DAP debugging strategy
   if arguments.strategy == 'dap' then
+    -- Create marker file path to track test completion
+    local marker_file = os.tmpname() .. '.gradle-test-done'
+
     -- Create a temporary Gradle init script that configures test JVM for debugging
     -- This is necessary because --debug-jvm debugs Gradle itself, not the test JVM
-    local init_script_content = [[
+    -- Also adds a marker file at the end to ensure we wait for test results to be written
+    local init_script_content = string.format([[
 allprojects {
   tasks.withType(Test) {
     jvmArgs '-agentlib:jdwp=transport=dt_socket,server=y,suspend=y,address=5005'
+
+    // Write marker file when test task completes and results are written
+    doLast {
+      new File('%s').text = 'done'
+    }
   }
 }
-]]
+]], marker_file)
 
     -- Create temporary init script file
     local init_script_path = os.tmpname()
@@ -188,8 +198,12 @@ allprojects {
     -- Create temp file for Gradle output (so we can parse it)
     local output_file = os.tmpname() .. '.log'
 
+    -- Ensure marker file doesn't exist from a previous run
+    os.remove(marker_file)
+
     -- Start Gradle in background and capture PID
-    local start_cmd = 'nohup ' .. gradle_cmd .. ' > ' .. output_file .. ' 2>&1 & echo $!'
+    -- Use setsid to create a new session, isolating from SIGINT
+    local start_cmd = 'setsid nohup ' .. gradle_cmd .. ' > ' .. output_file .. ' 2>&1 & echo $!'
 
     local handle = io.popen(start_cmd)
     local pid = handle:read('*l')
@@ -280,12 +294,19 @@ allprojects {
         sleep 0.5
       done
 
-      # Give Gradle a moment to flush all file writes (test results)
-      sleep 1
+      # Wait for marker file to ensure test results are written
+      # This guarantees we don't read old results from previous run
+      for i in $(seq 1 30); do
+        if [ -f "%s" ]; then
+          break
+        fi
+        sleep 0.5
+      done
 
-      # Clean up temporary init script
+      # Clean up temporary files
       rm -f %s
-    ]], pid, init_script_path)
+      rm -f "%s"
+    ]], pid, marker_file, init_script_path, marker_file)
 
     return {
       command = {'sh', '-c', wait_script},
