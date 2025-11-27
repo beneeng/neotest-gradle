@@ -171,63 +171,52 @@ allprojects {
       table.insert(command, test_index, '--init-script')
     end
 
-    print('DEBUG: Starting Gradle with command: ' .. vim.inspect(command))
-
-    -- Start Gradle process using vim.loop.spawn (platform-independent)
-    local gradle_args = {}
-    for i = 2, #command do
-      table.insert(gradle_args, command[i])
+    -- Build the full Gradle command as a properly escaped string
+    local gradle_cmd_parts = {}
+    for _, part in ipairs(command) do
+      -- Escape single quotes in each part for shell safety
+      local escaped = part:gsub("'", "'\\''")
+      table.insert(gradle_cmd_parts, "'" .. escaped .. "'")
     end
+    local gradle_cmd = table.concat(gradle_cmd_parts, ' ')
 
-    local gradle_handle
-    local gradle_pid
-    local gradle_exited = false
+    print('DEBUG: Full Gradle command: ' .. gradle_cmd)
+    print('DEBUG: build_spec() is being called - about to start Gradle')
 
-    gradle_handle, gradle_pid = vim.loop.spawn(
-      command[1],  -- Gradle executable
-      {
-        args = gradle_args,
-        cwd = project_directory,
-        detached = true,
-      },
-      function(code, signal)
-        gradle_exited = true
-        print('DEBUG: Gradle exited with code: ' .. tostring(code) .. ', signal: ' .. tostring(signal))
-      end
-    )
+    -- Start Gradle in background and capture PID
+    -- IMPORTANT: This happens BEFORE returning RunSpec, so it blocks here
+    local start_cmd = gradle_cmd .. ' & echo $!'
+    print('DEBUG: Executing: ' .. start_cmd)
 
-    if not gradle_handle then
+    local handle = io.popen(start_cmd)
+    local pid = handle:read('*l')
+    handle:close()
+
+    print('DEBUG: Received PID: ' .. tostring(pid))
+
+    if not pid or pid == '' then
+      -- Clean up init script
       os.remove(init_script_path)
       error('Failed to start Gradle process for DAP debugging')
     end
 
-    print('DEBUG: Started Gradle with PID: ' .. gradle_pid)
+    -- Check if process actually started
+    local process_check = os.execute('ps -p ' .. pid .. ' > /dev/null 2>&1')
+    print('DEBUG: Process check result: ' .. tostring(process_check))
 
-    -- Helper function to check if process is alive (platform-independent)
-    local function is_process_alive(pid)
-      local success = pcall(vim.loop.kill, pid, 0)
-      return success
-    end
-
-    -- Synchronous port polling using os.execute - compatible with fast event context
+    -- Synchronous port polling - BLOCKS here until port is ready or timeout
     -- This ensures DAP will only start AFTER the port is available
-    print('Starting Gradle with PID ' .. gradle_pid .. ', waiting for debug port 5005...')
-
+    print('Starting Gradle with PID ' .. pid .. ', waiting for debug port 5005...')
     local port_ready = false
     for i = 1, 100 do  -- 10 seconds total (100 * 0.1s)
-      -- Check if Gradle process died
-      if gradle_exited or not is_process_alive(gradle_pid) then
-        print('WARNING: Gradle process ' .. gradle_pid .. ' is not running anymore!')
-        break
-      end
+      -- Check both port AND if Gradle process is still running
+      -- Use nc (netcat) for macOS compatibility
+      local port_check = os.execute('nc -z -G 1 localhost 5005 2>/dev/null')
+      local proc_alive = os.execute('kill -0 ' .. pid .. ' 2>/dev/null')
 
-      -- Check if port is open using bash's built-in /dev/tcp
-      -- Note: Using os.execute instead of vim.wait to avoid fast event context issues
-      local port_check = os.execute('(echo > /dev/tcp/localhost/5005) 2>/dev/null')
-
-      if i % 10 == 0 then  -- Print every ~1 second
+      if i % 10 == 0 then  -- Print every second
         print(string.format('DEBUG: Attempt %d/100 - Port check: %s, Process alive: %s',
-          i, tostring(port_check), tostring(is_process_alive(gradle_pid))))
+          i, tostring(port_check), tostring(proc_alive)))
       end
 
       -- Handle different Lua version return values (boolean in 5.2+, number in 5.1)
@@ -237,15 +226,22 @@ allprojects {
         break
       end
 
+      -- If Gradle process died, stop polling
+      if not (proc_alive == 0 or proc_alive == true) then
+        print('WARNING: Gradle process ' .. pid .. ' is not running anymore!')
+        break
+      end
+
       os.execute('sleep 0.1')
     end
 
     if not port_ready then
       -- Kill the Gradle process since port didn't open
-      pcall(vim.loop.kill, gradle_pid, 'sigterm')
+      os.execute('kill ' .. pid .. ' 2>/dev/null')
       os.remove(init_script_path)
       error('Timeout: Gradle debug port 5005 did not open within 10 seconds')
     end
+
     print('DEBUG: Returning RunSpec with wait command')
 
     -- Gradle is running and port is ready, return RunSpec with command that waits for Gradle
