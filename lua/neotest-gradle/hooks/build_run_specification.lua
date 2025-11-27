@@ -137,7 +137,6 @@ return function(arguments)
   if arguments.strategy == 'dap' then
     table.insert(command, '--rerun-tasks')     -- Force re-run tests even if up-to-date
     table.insert(command, '--no-build-cache')  -- Disable build cache to always recompile
-    table.insert(command, '--no-daemon')       -- Don't use daemon for clean process lifecycle
   end
 
   vim.list_extend(command, test_filter_args)
@@ -202,8 +201,7 @@ allprojects {
     os.remove(marker_file)
 
     -- Start Gradle in background and capture PID
-    -- Use setsid to create a new session, isolating from SIGINT
-    local start_cmd = 'setsid nohup ' .. gradle_cmd .. ' > ' .. output_file .. ' 2>&1 & echo $!'
+    local start_cmd = 'nohup ' .. gradle_cmd .. ' > ' .. output_file .. ' 2>&1 & echo $!'
 
     local handle = io.popen(start_cmd)
     local pid = handle:read('*l')
