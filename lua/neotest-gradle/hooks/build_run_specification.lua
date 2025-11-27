@@ -183,10 +183,14 @@ allprojects {
     print('DEBUG: Full Gradle command: ' .. gradle_cmd)
     print('DEBUG: build_spec() is being called - about to start Gradle')
 
+    -- Create temp file for Gradle output (so we can parse it)
+    local output_file = os.tmpname() .. '.log'
+
     -- Start Gradle in background and capture PID
-    -- Use nohup to detach from shell so process survives handle:close()
-    local start_cmd = 'nohup ' .. gradle_cmd .. ' > /dev/null 2>&1 & echo $!'
+    -- Output goes to temp file so we can monitor for "Listening for transport dt_socket"
+    local start_cmd = 'nohup ' .. gradle_cmd .. ' > ' .. output_file .. ' 2>&1 & echo $!'
     print('DEBUG: Executing: ' .. start_cmd)
+    print('DEBUG: Output file: ' .. output_file)
 
     local handle = io.popen(start_cmd)
     local pid = handle:read('*l')
@@ -207,29 +211,33 @@ allprojects {
     local process_check = os.execute('ps -p ' .. pid .. ' > /dev/null 2>&1')
     print('DEBUG: Process check result: ' .. tostring(process_check))
 
-    -- Synchronous port polling - BLOCKS here until port is ready or timeout
-    -- This ensures DAP will only start AFTER the port is available
-    print('Starting Gradle with PID ' .. pid .. ', waiting for debug port 5005...')
+    -- Parse Gradle output until we see "Listening for transport dt_socket"
+    -- This is much more reliable than port checking and platform-independent!
+    print('Starting Gradle with PID ' .. pid .. ', waiting for "Listening for transport dt_socket"...')
     local port_ready = false
     local dap_attached = false
     for i = 1, 100 do  -- 10 seconds total (100 * 0.1s)
-      -- Check both port AND if Gradle process is still running
-      -- Use lsof to check if port is LISTENING (without connecting!)
-      -- This is important: nc -z would actually connect, which might confuse the JVM
-      local port_check = os.execute('lsof -nP -iTCP:5005 -sTCP:LISTEN > /dev/null 2>&1')
+      -- Check if Gradle process is still running
       local proc_alive = os.execute('kill -0 ' .. pid .. ' 2>/dev/null')
 
-      if i % 10 == 0 then  -- Print every second
-        print(string.format('DEBUG: Attempt %d/100 - Port check: %s, Process alive: %s',
-          i, tostring(port_check), tostring(proc_alive)))
+      -- Read Gradle output and check for "Listening" message
+      local file = io.open(output_file, 'r')
+      if file then
+        local content = file:read('*all')
+        file:close()
+
+        -- Look for "Listening for transport dt_socket" (with error tolerance - no specific port)
+        if content:match('Listening for transport dt_socket') then
+          dap_attached = true
+          port_ready = true
+          print('Found "Listening for transport dt_socket" in Gradle output - DAP can now attach')
+          break
+        end
       end
 
-      -- Handle different Lua version return values (boolean in 5.2+, number in 5.1)
-      if port_check == 0 or port_check == true then
-        dap_attached = true
-        port_ready = true
-        print('Port 5005 is ready - DAP can now attach')
-        break
+      if i % 10 == 0 then  -- Print every second
+        print(string.format('DEBUG: Attempt %d/100 - Process alive: %s',
+          i, tostring(proc_alive)))
       end
 
       -- If Gradle process died, check if DAP was already attached
@@ -240,8 +248,22 @@ allprojects {
           port_ready = true
           break
         else
-          -- Process died before port was ready - this is an error
-          print('WARNING: Gradle process ' .. pid .. ' died before port 5005 was ready!')
+          -- Process died before we saw "Listening" - this is an error
+          print('WARNING: Gradle process ' .. pid .. ' died before debug port was ready!')
+          -- Print last lines of output for debugging
+          local file = io.open(output_file, 'r')
+          if file then
+            local content = file:read('*all')
+            file:close()
+            local last_lines = {}
+            for line in content:gmatch('[^\r\n]+') do
+              table.insert(last_lines, line)
+            end
+            print('Last Gradle output lines:')
+            for i = math.max(1, #last_lines - 5), #last_lines do
+              print('  ' .. last_lines[i])
+            end
+          end
           break
         end
       end
@@ -249,11 +271,14 @@ allprojects {
       os.execute('sleep 0.1')
     end
 
+    -- Clean up output file
+    os.remove(output_file)
+
     if not port_ready then
       -- Kill the Gradle process since port didn't open
       os.execute('kill ' .. pid .. ' 2>/dev/null')
       os.remove(init_script_path)
-      error('Timeout: Gradle debug port 5005 did not open within 10 seconds')
+      error('Timeout: Did not see "Listening for transport dt_socket" in Gradle output within 10 seconds')
     end
 
     print('DEBUG: Returning RunSpec with wait command')
