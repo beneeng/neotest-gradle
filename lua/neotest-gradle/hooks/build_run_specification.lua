@@ -183,15 +183,6 @@ allprojects {
     print('DEBUG: Full Gradle command: ' .. gradle_cmd)
     print('DEBUG: build_spec() is being called - about to start Gradle')
 
-    -- Clean up any existing process using port 5005 to avoid conflicts
-    local port_in_use = os.execute('nc -z localhost 5005 2>/dev/null')
-    if port_in_use == 0 or port_in_use == true then
-      print('WARNING: Port 5005 is already in use, cleaning up...')
-      os.execute('lsof -ti:5005 | xargs kill -9 2>/dev/null')
-      os.execute('sleep 1')  -- Give it time to release the port
-      print('Port 5005 cleanup completed')
-    end
-
     -- Start Gradle in background and capture PID
     -- Use nohup to detach from shell so process survives handle:close()
     local start_cmd = 'nohup ' .. gradle_cmd .. ' > /dev/null 2>&1 & echo $!'
@@ -202,6 +193,9 @@ allprojects {
     handle:close()
 
     print('DEBUG: Received PID: ' .. tostring(pid))
+
+    -- Give Gradle a moment to initialize
+    os.execute('sleep 0.5')
 
     if not pid or pid == '' then
       -- Clean up init script
@@ -262,6 +256,8 @@ allprojects {
         sleep 0.5
       done
       echo "Gradle process completed"
+      # Clean up any remaining processes on port 5005
+      lsof -ti:5005 2>/dev/null | xargs kill -9 2>/dev/null || true
       rm -f %s
     ]], pid, pid, init_script_path)
 
