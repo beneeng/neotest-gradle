@@ -201,8 +201,32 @@ allprojects {
     -- Ensure marker file doesn't exist from a previous run
     os.remove(marker_file)
 
-    -- Start Gradle in background and capture PID
-    local start_cmd = 'nohup ' .. gradle_cmd .. ' > ' .. output_file .. ' 2>&1 & echo $!'
+    -- Create a wrapper script that runs Gradle and protects it from SIGINT
+    -- This ensures Gradle completes and writes test results even when DAP session ends
+    local wrapper_script = string.format([[
+#!/bin/bash
+# Ignore SIGINT to protect Gradle from being interrupted when DAP ends
+trap '' INT
+
+# Execute Gradle (replace shell with Gradle process)
+exec %s
+]], gradle_cmd)
+
+    -- Write wrapper script to temp file
+    local wrapper_file = os.tmpname() .. '.sh'
+    local wrapper_handle = io.open(wrapper_file, 'w')
+    if not wrapper_handle then
+      os.remove(init_script_path)
+      error('Failed to create Gradle wrapper script')
+    end
+    wrapper_handle:write(wrapper_script)
+    wrapper_handle:close()
+
+    -- Make wrapper script executable
+    os.execute('chmod +x ' .. wrapper_file)
+
+    -- Start wrapper script in background and capture PID
+    local start_cmd = 'nohup sh ' .. wrapper_file .. ' > ' .. output_file .. ' 2>&1 & echo $!'
 
     local handle = io.popen(start_cmd)
     local pid = handle:read('*l')
@@ -282,13 +306,13 @@ allprojects {
 
     -- Gradle is running and port is ready, return RunSpec with command that waits for Gradle
     -- The command just monitors the Gradle process until it completes
-    -- IMPORTANT: Trap SIGINT to ensure Gradle finishes writing test results before cleanup
+    -- IMPORTANT: Trap SIGINT to ensure we wait for Gradle to complete
     local wait_script = string.format([[
       # Ignore SIGINT to ensure we wait for Gradle to complete
       # This prevents premature termination when DAP session ends
       trap '' INT
 
-      # Wait for Gradle process to finish
+      # Wait for Gradle wrapper process to finish
       while kill -0 %s 2>/dev/null; do
         sleep 0.5
       done
@@ -305,7 +329,8 @@ allprojects {
       # Clean up temporary files
       rm -f %s
       rm -f "%s"
-    ]], pid, marker_file, init_script_path, marker_file)
+      rm -f %s
+    ]], pid, marker_file, init_script_path, marker_file, wrapper_file)
 
     return {
       command = {'sh', '-c', wait_script},
