@@ -312,25 +312,37 @@ exec %s
       # This prevents premature termination when DAP session ends
       trap '' INT
 
+      # LOGGING: Track wait_script lifecycle
+      echo "[$(date +'%%H:%%M:%%S')] WAIT_SCRIPT STARTED - Waiting for Gradle PID %s"
+
       # Wait for Gradle wrapper process to finish
       while kill -0 %s 2>/dev/null; do
         sleep 0.5
       done
+      echo "[$(date +'%%H:%%M:%%S')] Gradle process ended - Waiting for marker file"
 
       # Wait for marker file to ensure test results are written
       # This guarantees we don't read old results from previous run
       for i in $(seq 1 30); do
         if [ -f "%s" ]; then
+          echo "[$(date +'%%H:%%M:%%S')] Marker file found - Test results should be ready"
           break
         fi
         sleep 0.5
       done
 
+      # Check if marker file was found
+      if [ ! -f "%s" ]; then
+        echo "[$(date +'%%H:%%M:%%S')] WARNING: Marker file NOT found after 15 seconds!"
+      fi
+
+      echo "[$(date +'%%H:%%M:%%S')] WAIT_SCRIPT ENDING - About to cleanup"
+
       # Clean up temporary files
       rm -f %s
       rm -f "%s"
       rm -f %s
-    ]], pid, marker_file, init_script_path, marker_file, wrapper_file)
+    ]], pid, pid, marker_file, marker_file, init_script_path, marker_file, wrapper_file)
 
     return {
       command = {'sh', '-c', wait_script},

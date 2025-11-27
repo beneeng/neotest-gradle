@@ -112,11 +112,19 @@ end
 --- @param tree table - see neotest.Tree
 --- @return table<string, table> - see neotest.Result
 return function(build_specfication, _, tree)
+  -- LOGGING: Track when results() is called
+  local timestamp = os.date('%H:%M:%S')
+  print(string.format('[%s] RESULTS() CALLED - Reading from: %s',
+    timestamp, build_specfication.context.test_results_directory))
+
   local results = {}
   local position = tree:data()
   local results_directory = build_specfication.context.test_results_directory
 
   local juris_reports = parse_xml_files_from_directory(results_directory)
+
+  -- LOGGING: Report what we found
+  print(string.format('[%s] Found %d XML file(s)', timestamp, #juris_reports))
 
   -- Collect results for individual test positions
   for _, juris_report in pairs(juris_reports) do
