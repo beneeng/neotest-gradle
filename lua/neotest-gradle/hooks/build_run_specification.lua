@@ -137,6 +137,7 @@ return function(arguments)
   if arguments.strategy == 'dap' then
     table.insert(command, '--rerun-tasks')     -- Force re-run tests even if up-to-date
     table.insert(command, '--no-build-cache')  -- Disable build cache to always recompile
+    table.insert(command, '--no-daemon')       -- Don't use daemon for clean process lifecycle
   end
 
   vim.list_extend(command, test_filter_args)
