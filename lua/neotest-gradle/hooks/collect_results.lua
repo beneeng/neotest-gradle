@@ -1,6 +1,7 @@
 local lib = require('neotest.lib')
 local xml = require('neotest.lib.xml')
 local get_package_name = require('neotest-gradle.hooks.shared_utilities').get_package_name
+local nio = require('nio')
 
 local XML_FILE_SUFFIX = '.xml'
 local STATUS_PASSED = 'passed' --- see neotest.Result.status
@@ -32,6 +33,7 @@ end
 
 --- Waits for a marker file to exist, indicating that test results are ready.
 --- Polls for the file with exponential backoff up to a maximum timeout.
+--- Uses nio.sleep() for non-blocking wait that yields to event loop.
 --- Returns true if marker file found, false if timeout reached.
 ---
 --- @param marker_file_path string|nil - Path to marker file
@@ -63,8 +65,8 @@ local function wait_for_marker_file(marker_file_path, timeout_seconds)
       return true
     end
 
-    -- Sleep with exponential backoff
-    vim.loop.sleep(sleep_ms)
+    -- Non-blocking sleep - yields to event loop
+    nio.sleep(sleep_ms)
     sleep_ms = math.min(sleep_ms * 1.5, max_sleep_ms)
   end
 
