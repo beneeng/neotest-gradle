@@ -130,14 +130,7 @@ return function(arguments)
   context.test_results_directory = get_test_results_directory(gradle_executable, project_directory)
 
   -- Build the Gradle command
-  local command = { gradle_executable, '--project-dir', project_directory }
-
-  -- For DAP debugging, add clean task to force complete rebuild
-  if arguments.strategy == 'dap' then
-    table.insert(command, 'clean')
-  end
-
-  table.insert(command, 'test')
+  local command = { gradle_executable, '--project-dir', project_directory, 'test' }
 
   -- For DAP debugging, force re-run and rebuild of tests
   -- Otherwise Gradle may skip test execution or use cached build artifacts
@@ -276,11 +269,21 @@ allprojects {
 
     -- Gradle is running and port is ready, return RunSpec with command that waits for Gradle
     -- The command just monitors the Gradle process until it completes
-    -- Also clean up the init script when done
+    -- IMPORTANT: Trap SIGINT to ensure Gradle finishes writing test results before cleanup
     local wait_script = string.format([[
+      # Ignore SIGINT to ensure we wait for Gradle to complete
+      # This prevents premature termination when DAP session ends
+      trap '' INT
+
+      # Wait for Gradle process to finish
       while kill -0 %s 2>/dev/null; do
         sleep 0.5
       done
+
+      # Give Gradle a moment to flush all file writes (test results)
+      sleep 1
+
+      # Clean up temporary init script
       rm -f %s
     ]], pid, init_script_path)
 
