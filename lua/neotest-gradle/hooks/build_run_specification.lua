@@ -130,7 +130,14 @@ return function(arguments)
   context.test_results_directory = get_test_results_directory(gradle_executable, project_directory)
 
   -- Build the Gradle command
-  local command = { gradle_executable, '--project-dir', project_directory, 'test' }
+  local command = { gradle_executable, '--project-dir', project_directory }
+
+  -- For DAP debugging, add clean task to force complete rebuild
+  if arguments.strategy == 'dap' then
+    table.insert(command, 'clean')
+  end
+
+  table.insert(command, 'test')
 
   -- For DAP debugging, force re-run and rebuild of tests
   -- Otherwise Gradle may skip test execution or use cached build artifacts
@@ -206,7 +213,6 @@ allprojects {
 
     -- Parse Gradle output until we see "Listening for transport dt_socket"
     -- This is much more reliable than port checking and platform-independent!
-    print('Waiting for Gradle test JVM to start...')
     local port_ready = false
     local dap_attached = false
     for i = 1, 100 do  -- 10 seconds total (100 * 0.1s)
@@ -223,7 +229,6 @@ allprojects {
         if content:match('Listening for transport dt_socket') then
           dap_attached = true
           port_ready = true
-          print('Found "Listening for transport dt_socket" in Gradle output - DAP can now attach')
           break
         end
       end
@@ -273,13 +278,11 @@ allprojects {
     -- The command just monitors the Gradle process until it completes
     -- Also clean up the init script when done
     local wait_script = string.format([[
-      echo "Gradle is running (PID %s), waiting for completion..."
       while kill -0 %s 2>/dev/null; do
         sleep 0.5
       done
-      echo "Gradle process completed"
       rm -f %s
-    ]], pid, pid, init_script_path)
+    ]], pid, init_script_path)
 
     return {
       command = {'sh', '-c', wait_script},
