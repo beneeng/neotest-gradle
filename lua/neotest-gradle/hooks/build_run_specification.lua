@@ -214,8 +214,9 @@ allprojects {
     local dap_attached = false
     for i = 1, 100 do  -- 10 seconds total (100 * 0.1s)
       -- Check both port AND if Gradle process is still running
-      -- Use nc (netcat) for macOS compatibility
-      local port_check = os.execute('nc -z -G 1 localhost 5005 2>/dev/null')
+      -- Use lsof to check if port is LISTENING (without connecting!)
+      -- This is important: nc -z would actually connect, which might confuse the JVM
+      local port_check = os.execute('lsof -nP -iTCP:5005 -sTCP:LISTEN > /dev/null 2>&1')
       local proc_alive = os.execute('kill -0 ' .. pid .. ' 2>/dev/null')
 
       if i % 10 == 0 then  -- Print every second
