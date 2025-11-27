@@ -237,7 +237,8 @@ exec %s
     os.execute('chmod +x ' .. wrapper_file)
 
     -- Start wrapper script in background and capture PID
-    local start_cmd = 'nohup sh ' .. wrapper_file .. ' > ' .. output_file .. ' 2>&1 & echo $!'
+    -- Redirect stdin to /dev/null to prevent JDWP from monitoring stdin and exiting when it closes
+    local start_cmd = 'nohup sh ' .. wrapper_file .. ' < /dev/null > ' .. output_file .. ' 2>&1 & echo $!'
 
     local handle = io.popen(start_cmd)
     local pid = handle:read('*l')
