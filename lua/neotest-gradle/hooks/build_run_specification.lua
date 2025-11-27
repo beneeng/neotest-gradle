@@ -128,6 +128,7 @@ return function(arguments)
 
   local context = {}
   context.test_results_directory = get_test_results_directory(gradle_executable, project_directory)
+  context.marker_file = nil  -- Will be populated later if DAP strategy is used
 
   -- Build the Gradle command
   local command = { gradle_executable, '--project-dir', project_directory, 'test' }
@@ -147,6 +148,9 @@ return function(arguments)
     -- Create marker file path to track test completion
     local marker_file = os.tmpname() .. '.gradle-test-done'
 
+    -- Store in context so results() can wait for it
+    context.marker_file = marker_file
+
     -- Create a temporary Gradle init script that configures test JVM for debugging
     -- This is necessary because --debug-jvm debugs Gradle itself, not the test JVM
     -- Also adds a marker file at the end to ensure we wait for test results to be written
@@ -155,9 +159,16 @@ allprojects {
   tasks.withType(Test) {
     jvmArgs '-agentlib:jdwp=transport=dt_socket,server=y,suspend=y,address=5005'
 
-    // Write marker file when test task completes and results are written
+    // Write marker file when test task completes
+    // This happens AFTER test results are written to XML files
     doLast {
-      new File('%s').text = 'done'
+      project.logger.lifecycle("Test task completed, writing marker file")
+
+      def markerFile = new File('%s')
+      markerFile.parentFile.mkdirs()
+      markerFile.text = "done:${new Date()}"
+
+      project.logger.lifecycle("Marker file written: ${markerFile.absolutePath}")
     }
   }
 }
@@ -305,8 +316,9 @@ exec %s
     end
 
     -- Gradle is running and port is ready, return RunSpec with command that waits for Gradle
-    -- The command just monitors the Gradle process until it completes
-    -- IMPORTANT: Trap SIGINT to ensure we wait for Gradle to complete
+    -- The command just waits for the background Gradle process
+    -- The actual synchronization happens in results() via marker file polling
+    -- This ensures DAP can detach cleanly while Gradle completes writing results
     local wait_script = string.format([[
       # Ignore SIGINT to ensure we wait for Gradle to complete
       # This prevents premature termination when DAP session ends
@@ -319,30 +331,17 @@ exec %s
       while kill -0 %s 2>/dev/null; do
         sleep 0.5
       done
-      echo "[$(date +'%%H:%%M:%%S')] Gradle process ended - Waiting for marker file"
+      echo "[$(date +'%%H:%%M:%%S')] Gradle process ended"
 
-      # Wait for marker file to ensure test results are written
-      # This guarantees we don't read old results from previous run
-      for i in $(seq 1 30); do
-        if [ -f "%s" ]; then
-          echo "[$(date +'%%H:%%M:%%S')] Marker file found - Test results should be ready"
-          break
-        fi
-        sleep 0.5
-      done
+      # Give filesystem a moment to sync (NFS, slow disks, etc.)
+      sleep 1
 
-      # Check if marker file was found
-      if [ ! -f "%s" ]; then
-        echo "[$(date +'%%H:%%M:%%S')] WARNING: Marker file NOT found after 15 seconds!"
-      fi
+      echo "[$(date +'%%H:%%M:%%S')] WAIT_SCRIPT ENDING - Cleanup"
 
-      echo "[$(date +'%%H:%%M:%%S')] WAIT_SCRIPT ENDING - About to cleanup"
-
-      # Clean up temporary files
+      # Clean up temporary files (marker file cleaned by results())
       rm -f %s
-      rm -f "%s"
       rm -f %s
-    ]], pid, pid, marker_file, marker_file, init_script_path, marker_file, wrapper_file)
+    ]], pid, pid, init_script_path, wrapper_file)
 
     return {
       command = {'sh', '-c', wait_script},

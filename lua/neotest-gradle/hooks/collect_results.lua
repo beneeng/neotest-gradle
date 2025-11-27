@@ -30,6 +30,51 @@ local function parse_xml_files_from_directory(directory_path)
   end, xml_files)
 end
 
+--- Waits for a marker file to exist, indicating that test results are ready.
+--- Polls for the file with exponential backoff up to a maximum timeout.
+--- Returns true if marker file found, false if timeout reached.
+---
+--- @param marker_file_path string|nil - Path to marker file
+--- @param timeout_seconds number - Maximum time to wait (default: 30)
+--- @return boolean - true if marker found, false if timeout
+local function wait_for_marker_file(marker_file_path, timeout_seconds)
+  -- If no marker file specified, return immediately (non-DAP mode)
+  if not marker_file_path or marker_file_path == '' then
+    return true
+  end
+
+  timeout_seconds = timeout_seconds or 30
+  local start_time = os.time()
+  local sleep_ms = 100  -- Start with 100ms
+  local max_sleep_ms = 1000  -- Cap at 1 second
+
+  local timestamp = os.date('%H:%M:%S')
+  print(string.format('[%s] RESULTS() waiting for marker file: %s', timestamp, marker_file_path))
+
+  while os.difftime(os.time(), start_time) < timeout_seconds do
+    -- Check if marker file exists
+    local stat = vim.loop.fs_stat(marker_file_path)
+    if stat then
+      timestamp = os.date('%H:%M:%S')
+      print(string.format('[%s] RESULTS() marker file found after %.1fs',
+        timestamp, os.difftime(os.time(), start_time)))
+      -- Clean up marker file
+      os.remove(marker_file_path)
+      return true
+    end
+
+    -- Sleep with exponential backoff
+    vim.loop.sleep(sleep_ms)
+    sleep_ms = math.min(sleep_ms * 1.5, max_sleep_ms)
+  end
+
+  -- Timeout reached
+  timestamp = os.date('%H:%M:%S')
+  print(string.format('[%s] WARNING: RESULTS() timeout waiting for marker file after %ds',
+    timestamp, timeout_seconds))
+  return false
+end
+
 --- If the value is a list itself it gets returned as is. Else a new list will be
 --- created with the value as first element.
 --- E.g.: { 'a', 'b' } => { 'a', 'b' } | 'a' => { 'a' }
@@ -116,6 +161,29 @@ return function(build_specfication, _, tree)
   local timestamp = os.date('%H:%M:%S')
   print(string.format('[%s] RESULTS() CALLED - Reading from: %s',
     timestamp, build_specfication.context.test_results_directory))
+
+  -- Wait for marker file if DAP strategy was used
+  local marker_file = build_specfication.context.marker_file
+  local marker_found = wait_for_marker_file(marker_file, 30)
+
+  if not marker_found then
+    -- Timeout waiting for marker file - return failure results
+    print(string.format('[%s] ERROR: Test results not ready - marker file timeout', timestamp))
+    local results = {}
+    for _, position in tree:iter() do
+      if position and position.type == 'test' then
+        results[position.id] = {
+          status = STATUS_FAILED,
+          errors = {
+            {
+              message = 'Test results not available: Gradle may have crashed or timed out writing results. Check Gradle output for errors.',
+            }
+          }
+        }
+      end
+    end
+    return results
+  end
 
   local results = {}
   local position = tree:data()
