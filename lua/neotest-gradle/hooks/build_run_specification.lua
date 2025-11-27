@@ -132,10 +132,11 @@ return function(arguments)
   -- Build the Gradle command
   local command = { gradle_executable, '--project-dir', project_directory, 'test' }
 
-  -- For DAP debugging, force re-run of tests even if they're up-to-date
-  -- Otherwise Gradle may skip test execution entirely, preventing debug port from opening
+  -- For DAP debugging, force re-run and rebuild of tests
+  -- Otherwise Gradle may skip test execution or use cached build artifacts
   if arguments.strategy == 'dap' then
-    table.insert(command, '--rerun-tasks')
+    table.insert(command, '--rerun-tasks')     -- Force re-run tests even if up-to-date
+    table.insert(command, '--no-build-cache')  -- Disable build cache to always recompile
   end
 
   vim.list_extend(command, test_filter_args)
@@ -161,8 +162,6 @@ allprojects {
     init_file:write(init_script_content)
     init_file:close()
 
-    print('DEBUG: Created init script at: ' .. init_script_path)
-
     -- Insert init-script argument before 'test' task
     local test_index = nil
     for i, arg in ipairs(command) do
@@ -186,23 +185,15 @@ allprojects {
     end
     local gradle_cmd = table.concat(gradle_cmd_parts, ' ')
 
-    print('DEBUG: Full Gradle command: ' .. gradle_cmd)
-    print('DEBUG: build_spec() is being called - about to start Gradle')
-
     -- Create temp file for Gradle output (so we can parse it)
     local output_file = os.tmpname() .. '.log'
 
     -- Start Gradle in background and capture PID
-    -- Output goes to temp file so we can monitor for "Listening for transport dt_socket"
     local start_cmd = 'nohup ' .. gradle_cmd .. ' > ' .. output_file .. ' 2>&1 & echo $!'
-    print('DEBUG: Executing: ' .. start_cmd)
-    print('DEBUG: Output file: ' .. output_file)
 
     local handle = io.popen(start_cmd)
     local pid = handle:read('*l')
     handle:close()
-
-    print('DEBUG: Received PID: ' .. tostring(pid))
 
     -- Give Gradle a moment to initialize
     os.execute('sleep 0.5')
@@ -213,13 +204,9 @@ allprojects {
       error('Failed to start Gradle process for DAP debugging')
     end
 
-    -- Check if process actually started
-    local process_check = os.execute('ps -p ' .. pid .. ' > /dev/null 2>&1')
-    print('DEBUG: Process check result: ' .. tostring(process_check))
-
     -- Parse Gradle output until we see "Listening for transport dt_socket"
     -- This is much more reliable than port checking and platform-independent!
-    print('Starting Gradle with PID ' .. pid .. ', waiting for "Listening for transport dt_socket"...')
+    print('Waiting for Gradle test JVM to start...')
     local port_ready = false
     local dap_attached = false
     for i = 1, 100 do  -- 10 seconds total (100 * 0.1s)
@@ -239,11 +226,6 @@ allprojects {
           print('Found "Listening for transport dt_socket" in Gradle output - DAP can now attach')
           break
         end
-      end
-
-      if i % 10 == 0 then  -- Print every second
-        print(string.format('DEBUG: Attempt %d/100 - Process alive: %s',
-          i, tostring(proc_alive)))
       end
 
       -- If Gradle process died, check if DAP was already attached
@@ -286,8 +268,6 @@ allprojects {
       os.remove(init_script_path)
       error('Timeout: Did not see "Listening for transport dt_socket" in Gradle output within 10 seconds')
     end
-
-    print('DEBUG: Returning RunSpec with wait command')
 
     -- Gradle is running and port is ready, return RunSpec with command that waits for Gradle
     -- The command just monitors the Gradle process until it completes
