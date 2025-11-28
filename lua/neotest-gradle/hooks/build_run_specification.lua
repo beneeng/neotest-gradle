@@ -206,18 +206,111 @@ allprojects {
     end
     local gradle_cmd = table.concat(gradle_cmd_parts, ' ')
 
-    -- Create temp file for Gradle output (so we can parse it)
+    -- Forward Gradle output into the DAP output channel so Neotest can display it
+    local function create_output_forwarder(output_path)
+      local timer = vim.loop.new_timer()
+      if not timer then
+        return nil
+      end
+
+      local dap = require('dap')
+      local handle = nil
+      local offset = 0
+      local backlog = ''
+
+      local function call_listeners(listeners, session, body)
+        for key, listener in pairs(listeners) do
+          local remove = listener(session, body)
+          if remove then
+            listeners[key] = nil
+          end
+        end
+      end
+
+      local function emit_output(text)
+        if text == '' then
+          return true
+        end
+        local session = dap.session()
+        if not session then
+          return false
+        end
+        local body = { category = 'stdout', output = text }
+        call_listeners(dap.listeners.before.event_output, session, body)
+        session:event_output(body)
+        call_listeners(dap.listeners.after.event_output, session, body)
+        return true
+      end
+
+      local function flush_backlog()
+        if backlog == '' then
+          return
+        end
+        if emit_output(backlog) then
+          backlog = ''
+        end
+      end
+
+      timer:start(0, 150, vim.schedule_wrap(function()
+        if not handle then
+          handle = io.open(output_path, 'r')
+          if handle and offset > 0 then
+            handle:seek('set', offset)
+          end
+        end
+
+        if not handle then
+          flush_backlog()
+          return
+        end
+
+        local chunk = handle:read('*a')
+        if chunk and chunk ~= '' then
+          offset = offset + #chunk
+          local data = chunk
+          if backlog ~= '' then
+            data = backlog .. chunk
+            backlog = ''
+          end
+          if not emit_output(data) then
+            backlog = data
+          end
+        else
+          flush_backlog()
+        end
+      end))
+
+      return {
+        stop = function()
+          timer:stop()
+          timer:close()
+          flush_backlog()
+          if handle then
+            handle:close()
+            handle = nil
+          end
+        end,
+      }
+    end
+
+    -- Create temp file for Gradle output (needed to detect when JDWP port is ready)
     local output_file = os.tmpname() .. '.log'
+    context.gradle_output_file = output_file
 
     -- Create a wrapper script that runs Gradle and protects it from SIGINT
     -- This ensures Gradle completes and writes test results even when DAP session ends
+    -- Note: In attach mode, DAP typically cannot capture stdout/stderr from already-running process
     local wrapper_script = string.format([[
 #!/bin/bash
 # Ignore SIGINT to protect Gradle from being interrupted when DAP ends
 trap '' INT
 
-# Execute Gradle (replace shell with Gradle process)
-exec %s
+# Start Gradle as subprocess (not exec) so trap remains active
+%s &
+GRADLE_PID=$!
+
+# Wait for Gradle to complete, protected by trap
+wait $GRADLE_PID
 ]], gradle_cmd)
 
     -- Write wrapper script to temp file
@@ -233,8 +326,15 @@ exec %s
     -- Make wrapper script executable
     os.execute('chmod +x ' .. wrapper_file)
 
+    local function cleanup_temp_files()
+      os.remove(init_script_path)
+      os.remove(wrapper_file)
+      os.remove(output_file)
+    end
+
     -- Start wrapper script in background and capture PID
     -- Redirect stdin to /dev/null to prevent JDWP from monitoring stdin and exiting when it closes
+    -- Redirect output so we can forward it into DAP while still keeping Gradle detached
     local start_cmd = 'nohup sh ' .. wrapper_file .. ' < /dev/null > ' .. output_file .. ' 2>&1 & echo $!'
 
     local handle = io.popen(start_cmd)
@@ -245,10 +345,12 @@ exec %s
     os.execute('sleep 0.5')
 
     if not pid or pid == '' then
-      -- Clean up init script
-      os.remove(init_script_path)
+      cleanup_temp_files()
       error('Failed to start Gradle process for DAP debugging')
     end
+
+    context.cleanup_temp_files = cleanup_temp_files
+    context.gradle_pid = pid
 
     -- Parse Gradle output until we see "Listening for transport dt_socket"
     -- This is much more reliable than port checking and platform-independent!
@@ -302,46 +404,34 @@ exec %s
       os.execute('sleep 0.1')
     end
 
-    -- Clean up output file
-    os.remove(output_file)
-
     if not port_ready then
       -- Kill the Gradle process since port didn't open
       os.execute('kill ' .. pid .. ' 2>/dev/null')
-      os.remove(init_script_path)
+      cleanup_temp_files()
       error('Timeout: Did not see "Listening for transport dt_socket" in Gradle output within 10 seconds')
     end
 
-    -- Gradle is running and port is ready, return RunSpec with command that waits for Gradle
-    -- The command just waits for the background Gradle process
-    -- The actual synchronization happens in results() via marker file polling
-    -- This ensures DAP can detach cleanly while Gradle completes writing results
-    local wait_script = string.format([[
-      # Ignore SIGINT to ensure we wait for Gradle to complete
-      # This prevents premature termination when DAP session ends
-      trap '' INT
-
-      # LOGGING: Track wait_script lifecycle
-      echo "[$(date +'%%H:%%M:%%S')] WAIT_SCRIPT STARTED - Waiting for Gradle PID %s"
-
-      # Wait for Gradle wrapper process to finish
-      while kill -0 %s 2>/dev/null; do
-        sleep 0.5
-      done
-      echo "[$(date +'%%H:%%M:%%S')] Gradle process ended"
-
-      # Give filesystem a moment to sync (NFS, slow disks, etc.)
-      sleep 1
-
-      echo "[$(date +'%%H:%%M:%%S')] WAIT_SCRIPT ENDING - Cleanup"
-
-      # Clean up temporary files (marker file cleaned by results())
-      rm -f %s
-      rm -f %s
-    ]], pid, pid, init_script_path, wrapper_file)
+    -- Gradle is running and port is ready. From here on we mirror the log file into DAP events.
+    local output_forwarder
+    local function start_output_forwarding()
+      if output_forwarder then
+        return
+      end
+      output_forwarder = create_output_forwarder(output_file)
+      if not output_forwarder then
+        vim.notify('[neotest-gradle] Failed to start Gradle output forwarder', vim.log.levels.WARN)
+      end
+    end
+    local function stop_output_forwarding()
+      if not output_forwarder then
+        return
+      end
+      output_forwarder.stop()
+      output_forwarder = nil
+    end
+    context.stop_output_forwarding = stop_output_forwarding
 
     return {
-      command = {'sh', '-c', wait_script},
       context = context,
       strategy = {
         type = 'kotlin',
@@ -351,6 +441,9 @@ exec %s
         hostName = 'localhost',
         port = 5005,
         timeout = 30000,  -- 30 seconds for DAP connection attempts
+        before = function()
+          start_output_forwarding()
+        end,
       }
     }
   end

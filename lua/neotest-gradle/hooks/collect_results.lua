@@ -179,6 +179,14 @@ return function(build_specfication, _, tree)
   local results_found = wait_for_test_results(results_directory, 30)
 
   if not results_found then
+    if build_specfication.context.stop_output_forwarding then
+      build_specfication.context.stop_output_forwarding()
+      build_specfication.context.stop_output_forwarding = nil
+    end
+    if build_specfication.context.cleanup_temp_files then
+      build_specfication.context.cleanup_temp_files()
+      build_specfication.context.cleanup_temp_files = nil
+    end
     -- Timeout waiting for results - return failure
     local timestamp = os.date('%H:%M:%S')
     print(string.format('[%s] ERROR: Test results not ready - XML files timeout', timestamp))
@@ -196,6 +204,15 @@ return function(build_specfication, _, tree)
       end
     end
     return results
+  end
+
+  if build_specfication.context.stop_output_forwarding then
+    build_specfication.context.stop_output_forwarding()
+    build_specfication.context.stop_output_forwarding = nil
+  end
+  if build_specfication.context.cleanup_temp_files then
+    build_specfication.context.cleanup_temp_files()
+    build_specfication.context.cleanup_temp_files = nil
   end
 
   local results = {}
