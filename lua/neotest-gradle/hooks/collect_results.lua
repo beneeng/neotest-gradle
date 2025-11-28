@@ -1,6 +1,7 @@
 local lib = require('neotest.lib')
 local xml = require('neotest.lib.xml')
 local get_package_name = require('neotest-gradle.hooks.shared_utilities').get_package_name
+local nio = require('nio')
 
 local XML_FILE_SUFFIX = '.xml'
 local STATUS_PASSED = 'passed' --- see neotest.Result.status
@@ -28,6 +29,67 @@ local function parse_xml_files_from_directory(directory_path)
     local content = lib.files.read(file_path)
     return xml.parse(content)
   end, xml_files)
+end
+
+--- Waits for test result XML files to exist and be ready.
+--- Polls the test results directory with exponential backoff up to a maximum timeout.
+--- Uses nio.sleep() for non-blocking wait that yields to event loop.
+--- Returns true if XML files found, false if timeout reached.
+---
+--- @param results_directory string - Path to test results directory
+--- @param timeout_seconds number - Maximum time to wait (default: 30)
+--- @return boolean - true if results found, false if timeout
+local function wait_for_test_results(results_directory, timeout_seconds)
+  -- If no directory specified, return immediately
+  if not results_directory or results_directory == '' then
+    return true
+  end
+
+  timeout_seconds = timeout_seconds or 30
+  local start_time = os.time()
+  local sleep_ms = 100  -- Start with 100ms
+  local max_sleep_ms = 500  -- Cap at 500ms (faster polling for XML files)
+
+  local xml_files_found = false
+
+  while os.difftime(os.time(), start_time) < timeout_seconds do
+    -- Check if directory exists
+    local dir_stat = vim.loop.fs_stat(results_directory)
+    if dir_stat then
+      -- Check for XML files using fs_scandir
+      local xml_count = 0
+      local handle = vim.loop.fs_scandir(results_directory)
+      if handle then
+        while true do
+          local name, type = vim.loop.fs_scandir_next(handle)
+          if not name then break end
+          if type == 'file' and name:match('%.xml$') then
+            xml_count = xml_count + 1
+          end
+        end
+      end
+
+      if xml_count > 0 then
+        -- Found XML files - wait a bit more to ensure they're fully written
+        if not xml_files_found then
+          xml_files_found = true
+          nio.sleep(500)  -- Wait 500ms for files to be fully written
+        end
+
+        return true
+      end
+    end
+
+    -- Non-blocking sleep - yields to event loop
+    nio.sleep(sleep_ms)
+    sleep_ms = math.min(sleep_ms * 1.5, max_sleep_ms)
+  end
+
+  -- Timeout reached
+  timestamp = os.date('%H:%M:%S')
+  print(string.format('[%s] WARNING: RESULTS() timeout waiting for XML files after %ds',
+    timestamp, timeout_seconds))
+  return false
 end
 
 --- If the value is a list itself it gets returned as is. Else a new list will be
@@ -111,10 +173,75 @@ end
 --- @param build_specfication table - see neotest.RunSpec
 --- @param tree table - see neotest.Tree
 --- @return table<string, table> - see neotest.Result
-return function(build_specfication, _, tree)
+return function(build_specfication, process_result, tree)
+  local context = (build_specfication and build_specfication.context) or {}
+
+  local function assign_output_path()
+    if not (process_result and context and context.gradle_log_path) then
+      return
+    end
+    local log_path = context.gradle_log_path
+    local summary_start = 1
+    local content_ok, content = pcall(lib.files.read, log_path)
+    if content_ok and content and content ~= '' then
+      local listening_idx = content:find('Listening for transport dt_socket', 1, true)
+      if listening_idx then
+        local newline_idx = content:find('\n', listening_idx)
+        if newline_idx then
+          summary_start = newline_idx + 1
+        else
+          summary_start = #content + 1
+        end
+      end
+      local trimmed = content:sub(summary_start):gsub('^%s+', '')
+      if trimmed ~= '' then
+        local summary_path = log_path .. '.summary'
+        local write_ok = pcall(function()
+          local handle = assert(io.open(summary_path, 'w'))
+          handle:write(trimmed)
+          handle:close()
+        end)
+        if write_ok then
+          process_result.output = summary_path
+          return
+        end
+      end
+    end
+    process_result.output = log_path
+  end
+  -- Wait for test result XML files to be ready
+  local results_directory = build_specfication.context.test_results_directory
+  local results_found = wait_for_test_results(results_directory, 30)
+
+  if not results_found then
+    if build_specfication.context.cleanup_resources then
+      build_specfication.context.cleanup_resources()
+      build_specfication.context.cleanup_resources = nil
+    end
+    assign_output_path()
+    -- Timeout waiting for results - return failure
+    local timestamp = os.date('%H:%M:%S')
+    print(string.format('[%s] ERROR: Test results not ready - XML files timeout', timestamp))
+    local results = {}
+    for _, position in tree:iter() do
+      if position and position.type == 'test' then
+        results[position.id] = {
+          status = STATUS_FAILED,
+          errors = {
+            {
+              message = 'Test results not available: Gradle may have crashed or failed to write XML results. Check Gradle output for errors.',
+            }
+          }
+        }
+      end
+    end
+    return results
+  end
+
+  assign_output_path()
+
   local results = {}
   local position = tree:data()
-  local results_directory = build_specfication.context.test_results_directory
 
   local juris_reports = parse_xml_files_from_directory(results_directory)
 
@@ -165,6 +292,21 @@ return function(build_specfication, _, tree)
           }
         end
       end
+    end
+  end
+
+  -- Mark tests without results as failed (e.g., when DAP fails or no XML generated)
+  -- This ensures tests don't silently pass when something goes wrong
+  for _, position in tree:iter() do
+    if position and position.type == 'test' and not results[position.id] then
+      results[position.id] = {
+        status = STATUS_FAILED,
+        errors = {
+          {
+            message = 'No test result found. Test may not have executed or DAP debugging failed.',
+          }
+        }
+      }
     end
   end
 

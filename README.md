@@ -23,15 +23,7 @@ adatper to Neotest.
 ```lua
 require('neotest').setup({
     adapters = {
-        -- Default configuration
         require('neotest-gradle'),
-
-        -- Or with custom configuration
-        require('neotest-gradle')({
-            dap_adapter_type = 'kotlin',  -- or 'java'
-            dap_port = 5005,              -- Debug port (default: 5005)
-        }),
-
         -- more adapters ...
     },
     -- more configuration ...
@@ -42,10 +34,11 @@ require('neotest').setup({
 <details>
 <summary>DAP Debug Configuration</summary>
 
-To enable debugging support, you need to:
+To enable debugging support:
 
 1. Install a JVM debug adapter like [kotlin-debug-adapter](https://github.com/fwcd/kotlin-debug-adapter)
-2. Configure nvim-dap with the adapter:
+
+2. Configure nvim-dap:
 
 ```lua
 local dap = require('dap')
@@ -53,10 +46,10 @@ local dap = require('dap')
 dap.adapters.kotlin = {
   type = 'executable',
   command = 'kotlin-debug-adapter',  -- Ensure this is in your PATH
-  args = {},
 }
 
--- Optional: Configure dap.configurations.kotlin if needed
+-- Optional: You can also configure dap.configurations.kotlin
+-- but neotest-gradle provides its own configuration
 ```
 
 3. Run tests in debug mode:
@@ -71,10 +64,18 @@ vim.keymap.set('n', '<leader>td', function()
 end, { desc = 'Debug nearest test' })
 ```
 
-The adapter will automatically:
-- Start Gradle with `--debug-jvm` flag
-- Wait for the debugger to attach on port 5005
-- Run the selected test(s) with breakpoint support
+**How it works:**
+- The adapter automatically starts Gradle with `--debug-jvm` flag in the background
+- Built-in port polling waits up to 10 seconds for port 5005 to be ready
+- Once the port is available, DAP adapter attaches to the Gradle process
+- Tests run with full debugging support (breakpoints, stepping, etc.)
+- Completely hands-free: just run the test and everything happens automatically
+
+**Technical details:**
+- The adapter uses a wrapper script that polls port 5005 every 100ms for up to 10 seconds
+- This ensures reliable DAP attachment even with slower Gradle startup times
+- The `projectRoot` configuration is included for kotlin-debug-adapter to properly resolve source files
+- Exit codes are properly propagated from Gradle to neotest
 
 </details>
 
