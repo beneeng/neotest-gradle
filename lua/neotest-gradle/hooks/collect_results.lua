@@ -50,9 +50,6 @@ local function wait_for_test_results(results_directory, timeout_seconds)
   local sleep_ms = 100  -- Start with 100ms
   local max_sleep_ms = 500  -- Cap at 500ms (faster polling for XML files)
 
-  local timestamp = os.date('%H:%M:%S')
-  print(string.format('[%s] RESULTS() waiting for XML files in: %s', timestamp, results_directory))
-
   local xml_files_found = false
 
   while os.difftime(os.time(), start_time) < timeout_seconds do
@@ -75,16 +72,10 @@ local function wait_for_test_results(results_directory, timeout_seconds)
       if xml_count > 0 then
         -- Found XML files - wait a bit more to ensure they're fully written
         if not xml_files_found then
-          timestamp = os.date('%H:%M:%S')
-          print(string.format('[%s] RESULTS() found %d XML file(s), waiting for write completion',
-            timestamp, xml_count))
           xml_files_found = true
           nio.sleep(500)  -- Wait 500ms for files to be fully written
         end
 
-        timestamp = os.date('%H:%M:%S')
-        print(string.format('[%s] RESULTS() XML files ready after %.1fs',
-          timestamp, os.difftime(os.time(), start_time)))
         return true
       end
     end
@@ -183,17 +174,13 @@ end
 --- @param tree table - see neotest.Tree
 --- @return table<string, table> - see neotest.Result
 return function(build_specfication, _, tree)
-  -- LOGGING: Track when results() is called
-  local timestamp = os.date('%H:%M:%S')
-  print(string.format('[%s] RESULTS() CALLED - Reading from: %s',
-    timestamp, build_specfication.context.test_results_directory))
-
   -- Wait for test result XML files to be ready
   local results_directory = build_specfication.context.test_results_directory
   local results_found = wait_for_test_results(results_directory, 30)
 
   if not results_found then
     -- Timeout waiting for results - return failure
+    local timestamp = os.date('%H:%M:%S')
     print(string.format('[%s] ERROR: Test results not ready - XML files timeout', timestamp))
     local results = {}
     for _, position in tree:iter() do
@@ -215,9 +202,6 @@ return function(build_specfication, _, tree)
   local position = tree:data()
 
   local juris_reports = parse_xml_files_from_directory(results_directory)
-
-  -- LOGGING: Report what we found
-  print(string.format('[%s] Found %d XML file(s)', timestamp, #juris_reports))
 
   -- Collect results for individual test positions
   for _, juris_report in pairs(juris_reports) do

@@ -151,7 +151,6 @@ return function(arguments)
       if stat then
         -- Remove all XML files from previous runs using fs_scandir
         local handle = vim.loop.fs_scandir(results_dir)
-        local old_files = {}
         if handle then
           while true do
             local name, type = vim.loop.fs_scandir_next(handle)
@@ -159,11 +158,9 @@ return function(arguments)
             if type == 'file' and name:match('%.xml$') then
               local filepath = results_dir .. '/' .. name
               os.remove(filepath)
-              table.insert(old_files, filepath)
             end
           end
         end
-        print(string.format('[DAP] Cleaned %d old XML file(s) from %s', #old_files, results_dir))
       end
     end
 
@@ -279,7 +276,6 @@ exec %s
       if not (proc_alive == 0 or proc_alive == true) then
         if dap_attached then
           -- Process ended after DAP attached - this is OK (test completed quickly)
-          print('Gradle process ended after DAP attached (test may have completed)')
           port_ready = true
           break
         else
