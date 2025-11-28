@@ -8,10 +8,16 @@ local STATUS_FAILED = 'failed' --- see neotest.Result.status
 
 --- Searches for all files XML files in this directory (not recursive) and
 --- parses their content as Lua tables using some Neotest utility.
+--- Returns an empty table if the directory doesn't exist.
 ---
 --- @param directory_path string
 --- @return table[] - list of parsed XML tables
 local function parse_xml_files_from_directory(directory_path)
+  -- Check if directory exists
+  if not directory_path or directory_path == '' or not vim.loop.fs_stat(directory_path) then
+    return {}
+  end
+
   local xml_files = lib.files.find(directory_path, {
     filter_dir = function(file_name)
       return file_name:sub(-#XML_FILE_SUFFIX) == XML_FILE_SUFFIX
@@ -45,13 +51,16 @@ local function find_position_for_test_case(tree, test_case_node)
   local test_name = test_case_node._attr.name:gsub('%(.*%)$', '') -- Strip parameters
   local class_name = test_case_node._attr.classname
 
+  -- Build multiple candidate IDs to handle different JUnit formats
+  -- IMPORTANT: Most specific patterns first!
   local candidate_ids = {
     class_name .. '.' .. test_name,                    -- JUnit4: com.example.Test.method
-    class_name:gsub('%$', '.') .. '.' .. test_name     -- Jupiter: com.example.Test$Inner -> com.example.Test.Inner.method (nested classes)
+    class_name:gsub('%$', '.') .. '.' .. test_name,    -- Jupiter: com.example.Test$Inner -> com.example.Test.Inner.method (nested classes)
   }
-  
+
+  -- First try to match test positions (type = 'test')
   for _, position in tree:iter() do
-    if position then
+    if position and position.type == 'test' then
       for _, candidate_id in ipairs(candidate_ids) do
         if position.id == candidate_id then
           return position
@@ -105,9 +114,11 @@ end
 return function(build_specfication, _, tree)
   local results = {}
   local position = tree:data()
-  local results_directory = build_specfication.context.test_resuls_directory
+  local results_directory = build_specfication.context.test_results_directory
+
   local juris_reports = parse_xml_files_from_directory(results_directory)
 
+  -- Collect results for individual test positions
   for _, juris_report in pairs(juris_reports) do
     for _, test_suite_node in pairs(asList(juris_report.testsuite)) do
       for _, test_case_node in pairs(asList(test_suite_node.testcase)) do
@@ -119,6 +130,39 @@ return function(build_specfication, _, tree)
           local error = failure_node and parse_error_from_failure_xml(failure_node, matched_position)
           local result = { status = status, short = short_message, errors = { error } }
           results[matched_position.id] = result
+        end
+      end
+    end
+  end
+
+  -- Aggregate results for namespace and file positions
+  -- Iterate through all positions and aggregate from children to parents
+  for _, position in tree:iter() do
+    if position and (position.type == 'namespace' or position.type == 'file') then
+      -- Check if we already have a result for this position
+      if not results[position.id] then
+        -- Count child results
+        local has_any_result = false
+        local has_failure = false
+
+        -- Check all positions in the tree to find children
+        for _, potential_child in tree:iter() do
+          if potential_child and results[potential_child.id] then
+            -- Check if this is a child by seeing if the ID starts with parent ID
+            if potential_child.id:sub(1, #position.id) == position.id and potential_child.id ~= position.id then
+              has_any_result = true
+              if results[potential_child.id].status == STATUS_FAILED then
+                has_failure = true
+              end
+            end
+          end
+        end
+
+        -- Only set result if we have child results
+        if has_any_result then
+          results[position.id] = {
+            status = has_failure and STATUS_FAILED or STATUS_PASSED
+          }
         end
       end
     end

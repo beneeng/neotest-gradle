@@ -22,12 +22,17 @@ end
 --- query the `testResultsDir` property. Has to do so some plain text parsing of
 --- the Gradle command output. The child folder named `test` is always added to
 --- this path.
---- Is empty is directory could not be determined.
+--- Falls back to standard Gradle test results directory if property cannot be determined.
 ---
 --- @param gradle_executable string
 --- @param project_directory string
 --- @return string - absolute path of test results directory
 local function get_test_results_directory(gradle_executable, project_directory)
+  -- Safety check for nil project_directory
+  if not project_directory or project_directory == '' then
+    return ''
+  end
+
   local command = {
     gradle_executable,
     '--project-dir',
@@ -41,11 +46,16 @@ local function get_test_results_directory(gradle_executable, project_directory)
 
   for _, line in pairs(output_lines) do
     if line:match('testResultsDir: ') then
-      return line:gsub('testResultsDir: ', '') .. lib.files.sep .. 'test'
+      local test_results_dir = line:gsub('testResultsDir: ', '')
+      -- Check if value is valid (not empty, not 'null' string, not 'nil' string)
+      if test_results_dir ~= '' and test_results_dir ~= 'null' and test_results_dir ~= 'nil' then
+        return test_results_dir .. lib.files.sep .. 'test'
+      end
     end
   end
 
-  return ''
+  -- Fallback to standard Gradle test results directory
+  return project_directory .. lib.files.sep .. 'build' .. lib.files.sep .. 'test-results' .. lib.files.sep .. 'test'
 end
 
 --- Takes a NeoTest tree object and iterate over its positions. For each position
@@ -77,6 +87,9 @@ end
 --- also be a whole file. In that case the paths are unknown and must be
 --- collected by some additional logic.
 ---
+--- Note: No quotes around position.id since we're using command arrays.
+--- Shell escaping is handled automatically by the process runner.
+---
 --- @param tree table - see neotest.Tree
 --- @param position table - see neotest.Position
 --- @return string[] - list of strings for arguments
@@ -84,16 +97,50 @@ local function get_test_filter_arguments(tree, position)
   local arguments = {}
 
   if position.type == 'test' or position.type == 'namespace' then
-    vim.list_extend(arguments, { '--tests', "'" .. position.id .. "'" })
+    vim.list_extend(arguments, { '--tests', position.id })
   elseif position.type == 'file' then
     local namespaces = get_namespaces_of_tree(tree)
 
     for _, namespace in pairs(namespaces) do
-      vim.list_extend(arguments, { '--tests', "'" .. namespace.id .. "'" })
+      vim.list_extend(arguments, { '--tests', namespace.id })
     end
   end
 
   return arguments
+end
+
+--- Builds the DAP configuration for debugging Gradle tests with kotlin-debug-adapter
+--- or other JVM debug adapters.
+---
+--- @param gradle_executable string
+--- @param project_directory string
+--- @param test_filter_args string[]
+--- @return table - DAP configuration
+local function build_dap_config(gradle_executable, project_directory, test_filter_args)
+  local config = require('neotest-gradle').config
+
+  -- Build the Gradle command for debugging
+  local debug_args = {
+    '--project-dir',
+    project_directory,
+    'test',
+    '--debug-jvm'  -- This makes Gradle wait for a debugger to attach
+  }
+  vim.list_extend(debug_args, test_filter_args)
+
+  return {
+    type = config.dap_adapter_type,
+    request = 'attach',
+    name = 'Attach to Gradle Test',
+    hostName = 'localhost',
+    port = config.dap_port,
+    timeout = 30000,
+    preLaunchTask = {
+      type = 'shell',
+      command = gradle_executable,
+      args = debug_args,
+    }
+  }
 end
 
 --- See Neotest adapter specification.
@@ -103,17 +150,38 @@ end
 --- It also determines the folder where the resulsts will be reported to, to
 --- collect them later on. That folder path is saved to the context object.
 ---
+--- Supports both integrated and DAP strategies for running/debugging tests.
+---
 --- @param arguments table - see neotest.RunArgs
 --- @return nil | table | table[] - see neotest.RunSpec[]
 return function(arguments)
   local position = arguments.tree:data()
   local project_directory = find_project_directory(position.path)
   local gradle_executable = get_gradle_executable(project_directory)
-  local command = { gradle_executable, '--project-dir', project_directory, 'test' }
-  vim.list_extend(command, get_test_filter_arguments(arguments.tree, position))
+  local test_filter_args = get_test_filter_arguments(arguments.tree, position)
 
   local context = {}
-  context.test_resuls_directory = get_test_results_directory(gradle_executable, project_directory)
+  context.test_results_directory = get_test_results_directory(gradle_executable, project_directory)
 
-  return { command = table.concat(command, ' '), context = context }
+  -- Determine which strategy to use
+  local strategy = arguments.strategy or 'integrated'
+
+  if strategy == 'dap' then
+    -- For DAP debugging strategy
+    local dap_config = build_dap_config(gradle_executable, project_directory, test_filter_args)
+    return {
+      strategy = dap_config,
+      context = context,
+    }
+  else
+    -- For integrated (default) strategy
+    -- Don't set strategy field - neotest will use default integrated strategy
+    local command = { gradle_executable, '--project-dir', project_directory, 'test' }
+    vim.list_extend(command, test_filter_args)
+
+    return {
+      command = command,  -- Return as array, not string
+      context = context,
+    }
+  end
 end
