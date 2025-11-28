@@ -128,7 +128,6 @@ return function(arguments)
 
   local context = {}
   context.test_results_directory = get_test_results_directory(gradle_executable, project_directory)
-  context.marker_file = nil  -- Will be populated later if DAP strategy is used
 
   -- Build the Gradle command
   local command = { gradle_executable, '--project-dir', project_directory, 'test' }
@@ -145,34 +144,30 @@ return function(arguments)
 
   -- Handle DAP debugging strategy
   if arguments.strategy == 'dap' then
-    -- Create marker file path to track test completion
-    local marker_file = os.tmpname() .. '.gradle-test-done'
-
-    -- Store in context so results() can wait for it
-    context.marker_file = marker_file
+    -- Clean test results directory to ensure we only read fresh results
+    local results_dir = context.test_results_directory
+    if results_dir and results_dir ~= '' then
+      local stat = vim.loop.fs_stat(results_dir)
+      if stat then
+        -- Remove all XML files from previous runs
+        local xml_pattern = results_dir .. '/*.xml'
+        local old_files = vim.fn.glob(xml_pattern, false, true)
+        for _, file in ipairs(old_files) do
+          os.remove(file)
+        end
+        print(string.format('[DAP] Cleaned %d old XML file(s) from %s', #old_files, results_dir))
+      end
+    end
 
     -- Create a temporary Gradle init script that configures test JVM for debugging
     -- This is necessary because --debug-jvm debugs Gradle itself, not the test JVM
-    -- Also adds a marker file at the end to ensure we wait for test results to be written
-    local init_script_content = string.format([[
+    local init_script_content = [[
 allprojects {
   tasks.withType(Test) {
     jvmArgs '-agentlib:jdwp=transport=dt_socket,server=y,suspend=y,address=5005'
-
-    // Write marker file when test task completes
-    // This happens AFTER test results are written to XML files
-    doLast {
-      project.logger.lifecycle("Test task completed, writing marker file")
-
-      def markerFile = new File('%s')
-      markerFile.parentFile.mkdirs()
-      markerFile.text = "done:${new Date()}"
-
-      project.logger.lifecycle("Marker file written: ${markerFile.absolutePath}")
-    }
   }
 }
-]], marker_file)
+]]
 
     -- Create temporary init script file
     local init_script_path = os.tmpname()
@@ -208,9 +203,6 @@ allprojects {
 
     -- Create temp file for Gradle output (so we can parse it)
     local output_file = os.tmpname() .. '.log'
-
-    -- Ensure marker file doesn't exist from a previous run
-    os.remove(marker_file)
 
     -- Create a wrapper script that runs Gradle and protects it from SIGINT
     -- This ensures Gradle completes and writes test results even when DAP session ends

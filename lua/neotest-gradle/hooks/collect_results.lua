@@ -31,38 +31,51 @@ local function parse_xml_files_from_directory(directory_path)
   end, xml_files)
 end
 
---- Waits for a marker file to exist, indicating that test results are ready.
---- Polls for the file with exponential backoff up to a maximum timeout.
+--- Waits for test result XML files to exist and be ready.
+--- Polls the test results directory with exponential backoff up to a maximum timeout.
 --- Uses nio.sleep() for non-blocking wait that yields to event loop.
---- Returns true if marker file found, false if timeout reached.
+--- Returns true if XML files found, false if timeout reached.
 ---
---- @param marker_file_path string|nil - Path to marker file
+--- @param results_directory string - Path to test results directory
 --- @param timeout_seconds number - Maximum time to wait (default: 30)
---- @return boolean - true if marker found, false if timeout
-local function wait_for_marker_file(marker_file_path, timeout_seconds)
-  -- If no marker file specified, return immediately (non-DAP mode)
-  if not marker_file_path or marker_file_path == '' then
+--- @return boolean - true if results found, false if timeout
+local function wait_for_test_results(results_directory, timeout_seconds)
+  -- If no directory specified, return immediately
+  if not results_directory or results_directory == '' then
     return true
   end
 
   timeout_seconds = timeout_seconds or 30
   local start_time = os.time()
   local sleep_ms = 100  -- Start with 100ms
-  local max_sleep_ms = 1000  -- Cap at 1 second
+  local max_sleep_ms = 500  -- Cap at 500ms (faster polling for XML files)
 
   local timestamp = os.date('%H:%M:%S')
-  print(string.format('[%s] RESULTS() waiting for marker file: %s', timestamp, marker_file_path))
+  print(string.format('[%s] RESULTS() waiting for XML files in: %s', timestamp, results_directory))
+
+  local xml_files_found = false
 
   while os.difftime(os.time(), start_time) < timeout_seconds do
-    -- Check if marker file exists
-    local stat = vim.loop.fs_stat(marker_file_path)
-    if stat then
-      timestamp = os.date('%H:%M:%S')
-      print(string.format('[%s] RESULTS() marker file found after %.1fs',
-        timestamp, os.difftime(os.time(), start_time)))
-      -- Clean up marker file
-      os.remove(marker_file_path)
-      return true
+    -- Check if directory exists
+    local dir_stat = vim.loop.fs_stat(results_directory)
+    if dir_stat then
+      -- Check for XML files
+      local xml_files = vim.fn.glob(results_directory .. '/*.xml', false, true)
+      if xml_files and #xml_files > 0 then
+        -- Found XML files - wait a bit more to ensure they're fully written
+        if not xml_files_found then
+          timestamp = os.date('%H:%M:%S')
+          print(string.format('[%s] RESULTS() found %d XML file(s), waiting for write completion',
+            timestamp, #xml_files))
+          xml_files_found = true
+          nio.sleep(500)  -- Wait 500ms for files to be fully written
+        end
+
+        timestamp = os.date('%H:%M:%S')
+        print(string.format('[%s] RESULTS() XML files ready after %.1fs',
+          timestamp, os.difftime(os.time(), start_time)))
+        return true
+      end
     end
 
     -- Non-blocking sleep - yields to event loop
@@ -72,7 +85,7 @@ local function wait_for_marker_file(marker_file_path, timeout_seconds)
 
   -- Timeout reached
   timestamp = os.date('%H:%M:%S')
-  print(string.format('[%s] WARNING: RESULTS() timeout waiting for marker file after %ds',
+  print(string.format('[%s] WARNING: RESULTS() timeout waiting for XML files after %ds',
     timestamp, timeout_seconds))
   return false
 end
@@ -164,13 +177,13 @@ return function(build_specfication, _, tree)
   print(string.format('[%s] RESULTS() CALLED - Reading from: %s',
     timestamp, build_specfication.context.test_results_directory))
 
-  -- Wait for marker file if DAP strategy was used
-  local marker_file = build_specfication.context.marker_file
-  local marker_found = wait_for_marker_file(marker_file, 30)
+  -- Wait for test result XML files to be ready
+  local results_directory = build_specfication.context.test_results_directory
+  local results_found = wait_for_test_results(results_directory, 30)
 
-  if not marker_found then
-    -- Timeout waiting for marker file - return failure results
-    print(string.format('[%s] ERROR: Test results not ready - marker file timeout', timestamp))
+  if not results_found then
+    -- Timeout waiting for results - return failure
+    print(string.format('[%s] ERROR: Test results not ready - XML files timeout', timestamp))
     local results = {}
     for _, position in tree:iter() do
       if position and position.type == 'test' then
@@ -178,7 +191,7 @@ return function(build_specfication, _, tree)
           status = STATUS_FAILED,
           errors = {
             {
-              message = 'Test results not available: Gradle may have crashed or timed out writing results. Check Gradle output for errors.',
+              message = 'Test results not available: Gradle may have crashed or failed to write XML results. Check Gradle output for errors.',
             }
           }
         }
@@ -189,7 +202,6 @@ return function(build_specfication, _, tree)
 
   local results = {}
   local position = tree:data()
-  local results_directory = build_specfication.context.test_results_directory
 
   local juris_reports = parse_xml_files_from_directory(results_directory)
 
