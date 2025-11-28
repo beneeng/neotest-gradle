@@ -58,6 +58,25 @@ local function get_test_results_directory(gradle_executable, project_directory)
   return project_directory .. lib.files.sep .. 'build' .. lib.files.sep .. 'test-results' .. lib.files.sep .. 'test'
 end
 
+local function prepare_gradle_env()
+  local env = vim.deepcopy(vim.fn.environ())
+  env.TERM = env.TERM or 'xterm-256color'
+  env.CLICOLOR_FORCE = '1'
+  env.FORCE_COLOR = '1'
+  local gradle_opts = env.GRADLE_OPTS or ''
+  if gradle_opts == '' then
+    gradle_opts = '-Dorg.gradle.console=rich'
+  elseif not gradle_opts:find('-Dorg%.gradle%.console=rich', 1, false) then
+    gradle_opts = gradle_opts .. ' -Dorg.gradle.console=rich'
+  end
+  env.GRADLE_OPTS = gradle_opts
+  local env_list = {}
+  for key, value in pairs(env) do
+    env_list[#env_list + 1] = key .. '=' .. value
+  end
+  return env_list
+end
+
 --- Takes a NeoTest tree object and iterate over its positions. For each position
 --- it traverses up the tree to find the respective namespace that can be
 --- used to filter the tests on execution. The namespace is usually the parent
@@ -130,7 +149,7 @@ return function(arguments)
   context.test_results_directory = get_test_results_directory(gradle_executable, project_directory)
 
   -- Build the Gradle command arguments (without executable)
-  local gradle_args = { '--project-dir', project_directory, 'test' }
+  local gradle_args = { '--project-dir', project_directory, 'test', '--console=rich' }
 
   -- For DAP debugging, force re-run and rebuild of tests
   -- Otherwise Gradle may skip test execution or use cached build artifacts
@@ -205,6 +224,7 @@ allprojects {
       args = gradle_args,
       cwd = project_directory,
       stdio = { nil, stdout_pipe, stderr_pipe },
+      env = prepare_gradle_env(),
       detached = true,
     }, function(code, signal)
       stdout_pipe:read_stop()
@@ -388,13 +408,18 @@ allprojects {
       end, 50)
 
       if context.gradle_exit_code ~= nil and not port_ready then
+        local msg = 'Gradle process exited before debug port was ready (code ' .. tostring(context.gradle_exit_code) .. '). Check the build output for details.'
+        lib.notify('[neotest-gradle] ' .. msg, vim.log.levels.ERROR)
         cleanup_resources()
-        error('Gradle process exited before debug port was ready (code ' .. tostring(context.gradle_exit_code) .. ')')
+        error(msg, 0)
       end
 
       if wait_result == -1 or not port_ready then
+        local msg = 'Timeout waiting for Gradle debug port (did not see "Listening for transport dt_socket" within '
+          .. tostring(math.floor(timeout_ms / 1000)) .. ' seconds).'
+        lib.notify('[neotest-gradle] ' .. msg, vim.log.levels.ERROR)
         cleanup_resources()
-        error('Timeout: Did not see "Listening for transport dt_socket" in Gradle output within ' .. tostring(math.floor(timeout_ms / 1000)) .. ' seconds')
+        error(msg, 0)
       end
     end
 

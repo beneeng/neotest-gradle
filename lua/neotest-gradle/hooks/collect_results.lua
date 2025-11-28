@@ -177,9 +177,37 @@ return function(build_specfication, process_result, tree)
   local context = (build_specfication and build_specfication.context) or {}
 
   local function assign_output_path()
-    if process_result and context and context.gradle_log_path then
-      process_result.output = context.gradle_log_path
+    if not (process_result and context and context.gradle_log_path) then
+      return
     end
+    local log_path = context.gradle_log_path
+    local summary_start = 1
+    local content_ok, content = pcall(lib.files.read, log_path)
+    if content_ok and content and content ~= '' then
+      local listening_idx = content:find('Listening for transport dt_socket', 1, true)
+      if listening_idx then
+        local newline_idx = content:find('\n', listening_idx)
+        if newline_idx then
+          summary_start = newline_idx + 1
+        else
+          summary_start = #content + 1
+        end
+      end
+      local trimmed = content:sub(summary_start):gsub('^%s+', '')
+      if trimmed ~= '' then
+        local summary_path = log_path .. '.summary'
+        local write_ok = pcall(function()
+          local handle = assert(io.open(summary_path, 'w'))
+          handle:write(trimmed)
+          handle:close()
+        end)
+        if write_ok then
+          process_result.output = summary_path
+          return
+        end
+      end
+    end
+    process_result.output = log_path
   end
   -- Wait for test result XML files to be ready
   local results_directory = build_specfication.context.test_results_directory
