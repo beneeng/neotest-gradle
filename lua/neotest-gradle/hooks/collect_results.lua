@@ -59,14 +59,25 @@ local function wait_for_test_results(results_directory, timeout_seconds)
     -- Check if directory exists
     local dir_stat = vim.loop.fs_stat(results_directory)
     if dir_stat then
-      -- Check for XML files
-      local xml_files = vim.fn.glob(results_directory .. '/*.xml', false, true)
-      if xml_files and #xml_files > 0 then
+      -- Check for XML files using fs_scandir
+      local xml_count = 0
+      local handle = vim.loop.fs_scandir(results_directory)
+      if handle then
+        while true do
+          local name, type = vim.loop.fs_scandir_next(handle)
+          if not name then break end
+          if type == 'file' and name:match('%.xml$') then
+            xml_count = xml_count + 1
+          end
+        end
+      end
+
+      if xml_count > 0 then
         -- Found XML files - wait a bit more to ensure they're fully written
         if not xml_files_found then
           timestamp = os.date('%H:%M:%S')
           print(string.format('[%s] RESULTS() found %d XML file(s), waiting for write completion',
-            timestamp, #xml_files))
+            timestamp, xml_count))
           xml_files_found = true
           nio.sleep(500)  -- Wait 500ms for files to be fully written
         end

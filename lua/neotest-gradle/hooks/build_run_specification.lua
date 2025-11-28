@@ -149,11 +149,19 @@ return function(arguments)
     if results_dir and results_dir ~= '' then
       local stat = vim.loop.fs_stat(results_dir)
       if stat then
-        -- Remove all XML files from previous runs
-        local xml_pattern = results_dir .. '/*.xml'
-        local old_files = vim.fn.glob(xml_pattern, false, true)
-        for _, file in ipairs(old_files) do
-          os.remove(file)
+        -- Remove all XML files from previous runs using fs_scandir
+        local handle = vim.loop.fs_scandir(results_dir)
+        local old_files = {}
+        if handle then
+          while true do
+            local name, type = vim.loop.fs_scandir_next(handle)
+            if not name then break end
+            if type == 'file' and name:match('%.xml$') then
+              local filepath = results_dir .. '/' .. name
+              os.remove(filepath)
+              table.insert(old_files, filepath)
+            end
+          end
         end
         print(string.format('[DAP] Cleaned %d old XML file(s) from %s', #old_files, results_dir))
       end
