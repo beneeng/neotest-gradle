@@ -129,18 +129,18 @@ return function(arguments)
   local context = {}
   context.test_results_directory = get_test_results_directory(gradle_executable, project_directory)
 
-  -- Build the Gradle command
-  local command = { gradle_executable, '--project-dir', project_directory, 'test' }
+  -- Build the Gradle command arguments (without executable)
+  local gradle_args = { '--project-dir', project_directory, 'test' }
 
   -- For DAP debugging, force re-run and rebuild of tests
   -- Otherwise Gradle may skip test execution or use cached build artifacts
   if arguments.strategy == 'dap' then
-    table.insert(command, '--rerun-tasks')     -- Force re-run tests even if up-to-date
-    table.insert(command, '--no-build-cache')  -- Disable build cache to always recompile
-    table.insert(command, '--no-daemon')       -- Don't use daemon for clean process lifecycle
+    table.insert(gradle_args, '--rerun-tasks')     -- Force re-run tests even if up-to-date
+    table.insert(gradle_args, '--no-build-cache')  -- Disable build cache to always recompile
+    table.insert(gradle_args, '--no-daemon')       -- Don't use daemon for clean process lifecycle
   end
 
-  vim.list_extend(command, test_filter_args)
+  vim.list_extend(gradle_args, test_filter_args)
 
   -- Handle DAP debugging strategy
   if arguments.strategy == 'dap' then
@@ -185,7 +185,7 @@ allprojects {
 
     -- Insert init-script argument before 'test' task
     local test_index = nil
-    for i, arg in ipairs(command) do
+    for i, arg in ipairs(gradle_args) do
       if arg == 'test' then
         test_index = i
         break
@@ -193,243 +193,218 @@ allprojects {
     end
 
     if test_index then
-      table.insert(command, test_index, init_script_path)
-      table.insert(command, test_index, '--init-script')
+      table.insert(gradle_args, test_index, init_script_path)
+      table.insert(gradle_args, test_index, '--init-script')
     end
 
-    -- Build the full Gradle command as a properly escaped string
-    local gradle_cmd_parts = {}
-    for _, part in ipairs(command) do
-      -- Escape single quotes in each part for shell safety
-      local escaped = part:gsub("'", "'\\''")
-      table.insert(gradle_cmd_parts, "'" .. escaped .. "'")
+    local uv = vim.loop
+    local stdout_pipe = uv.new_pipe(false)
+    local stderr_pipe = uv.new_pipe(false)
+
+    local gradle_handle, pid_or_err = uv.spawn(gradle_executable, {
+      args = gradle_args,
+      cwd = project_directory,
+      stdio = { nil, stdout_pipe, stderr_pipe },
+      detached = true,
+    }, function(code, signal)
+      stdout_pipe:read_stop()
+      stderr_pipe:read_stop()
+      stdout_pipe:close()
+      stderr_pipe:close()
+      stdout_pipe = nil
+      stderr_pipe = nil
+      context.stdout_pipe = nil
+      context.stderr_pipe = nil
+      if gradle_handle and not gradle_handle:is_closing() then
+        gradle_handle:close()
+      end
+      if log_file then
+        log_file:close()
+        log_file = nil
+      end
+      context.gradle_exit_code = code
+      context.gradle_exit_signal = signal
+      context.wait_for_port_ready = nil
+      if init_script_path then
+        os.remove(init_script_path)
+        init_script_path = nil
+        context.init_script_path = nil
+      end
+      context.cleanup_resources = nil
+    end)
+
+    if not gradle_handle then
+      os.remove(init_script_path)
+      error('Failed to start Gradle process for DAP debugging: ' .. tostring(pid_or_err))
     end
-    local gradle_cmd = table.concat(gradle_cmd_parts, ' ')
 
-    -- Forward Gradle output into the DAP output channel so Neotest can display it
-    local function create_output_forwarder(output_path)
-      local timer = vim.loop.new_timer()
-      if not timer then
-        return nil
-      end
+    local dap = require('dap')
+    local backlog = ''
+    local flush_scheduled = false
+    local BACKLOG_LIMIT = 512 * 1024
+    local log_file_path = os.tmpname() .. '.gradle.log'
+    local log_file = io.open(log_file_path, 'w')
+    if not log_file then
+      error('Failed to create Gradle log file')
+    end
+    context.gradle_log_path = log_file_path
+    local LISTENING_TOKEN = 'Listening for transport dt_socket'
+    local detection_window = ''
+    local port_ready = false
 
-      local dap = require('dap')
-      local handle = nil
-      local offset = 0
-      local backlog = ''
-
-      local function call_listeners(listeners, session, body)
-        for key, listener in pairs(listeners) do
-          local remove = listener(session, body)
-          if remove then
-            listeners[key] = nil
-          end
+    local function call_listeners(listeners, session, body)
+      for key, listener in pairs(listeners) do
+        local remove = listener(session, body)
+        if remove then
+          listeners[key] = nil
         end
       end
+    end
 
-      local function emit_output(text)
-        if text == '' then
-          return true
-        end
-        local session = dap.session()
-        if not session then
-          return false
-        end
-        local body = { category = 'stdout', output = text }
-        call_listeners(dap.listeners.before.event_output, session, body)
-        session:event_output(body)
-        call_listeners(dap.listeners.after.event_output, session, body)
-        return true
+    local function schedule_flush()
+      if flush_scheduled then
+        return
       end
-
-      local function flush_backlog()
+      flush_scheduled = true
+      vim.schedule(function()
+        flush_scheduled = false
         if backlog == '' then
           return
         end
-        if emit_output(backlog) then
-          backlog = ''
-        end
-      end
-
-      timer:start(0, 150, vim.schedule_wrap(function()
-        if not handle then
-          handle = io.open(output_path, 'r')
-          if handle and offset > 0 then
-            handle:seek('set', offset)
+        local session = dap.session()
+        if not session then
+          if #backlog > BACKLOG_LIMIT then
+            backlog = backlog:sub(-BACKLOG_LIMIT)
           end
-        end
-
-        if not handle then
-          flush_backlog()
           return
         end
-
-        local chunk = handle:read('*a')
-        if chunk and chunk ~= '' then
-          offset = offset + #chunk
-          local data = chunk
-          if backlog ~= '' then
-            data = backlog .. chunk
-            backlog = ''
-          end
-          if not emit_output(data) then
-            backlog = data
-          end
-        else
-          flush_backlog()
-        end
-      end))
-
-      return {
-        stop = function()
-          timer:stop()
-          timer:close()
-          flush_backlog()
-          if handle then
-            handle:close()
-            handle = nil
-          end
-        end,
-      }
+        local body = { category = 'stdout', output = backlog }
+        backlog = ''
+        call_listeners(dap.listeners.before.event_output, session, body)
+        session:event_output(body)
+        call_listeners(dap.listeners.after.event_output, session, body)
+      end)
     end
 
-    -- Create temp file for Gradle output (needed to detect when JDWP port is ready)
-    local output_file = os.tmpname() .. '.log'
-    context.gradle_output_file = output_file
-
-    -- Create a wrapper script that runs Gradle and protects it from SIGINT
-    -- This ensures Gradle completes and writes test results even when DAP session ends
-    -- Note: In attach mode, DAP typically cannot capture stdout/stderr from already-running process
-    local wrapper_script = string.format([[
-#!/bin/bash
-# Ignore SIGINT to protect Gradle from being interrupted when DAP ends
-trap '' INT
-
-# Start Gradle as subprocess (not exec) so trap remains active
-%s &
-GRADLE_PID=$!
-
-# Wait for Gradle to complete, protected by trap
-wait $GRADLE_PID
-]], gradle_cmd)
-
-    -- Write wrapper script to temp file
-    local wrapper_file = os.tmpname() .. '.sh'
-    local wrapper_handle = io.open(wrapper_file, 'w')
-    if not wrapper_handle then
-      os.remove(init_script_path)
-      error('Failed to create Gradle wrapper script')
-    end
-    wrapper_handle:write(wrapper_script)
-    wrapper_handle:close()
-
-    -- Make wrapper script executable
-    os.execute('chmod +x ' .. wrapper_file)
-
-    local function cleanup_temp_files()
-      os.remove(init_script_path)
-      os.remove(wrapper_file)
-      os.remove(output_file)
+    local function flush_backlog()
+      schedule_flush()
     end
 
-    -- Start wrapper script in background and capture PID
-    -- Redirect stdin to /dev/null to prevent JDWP from monitoring stdin and exiting when it closes
-    -- Redirect output so we can forward it into DAP while still keeping Gradle detached
-    local start_cmd = 'nohup sh ' .. wrapper_file .. ' < /dev/null > ' .. output_file .. ' 2>&1 & echo $!'
-
-    local handle = io.popen(start_cmd)
-    local pid = handle:read('*l')
-    handle:close()
-
-    -- Give Gradle a moment to initialize
-    os.execute('sleep 0.5')
-
-    if not pid or pid == '' then
-      cleanup_temp_files()
-      error('Failed to start Gradle process for DAP debugging')
-    end
-
-    context.cleanup_temp_files = cleanup_temp_files
-    context.gradle_pid = pid
-
-    -- Parse Gradle output until we see "Listening for transport dt_socket"
-    -- This is much more reliable than port checking and platform-independent!
-    local port_ready = false
-    local dap_attached = false
-    for i = 1, 100 do  -- 10 seconds total (100 * 0.1s)
-      -- Check if Gradle process is still running
-      local proc_alive = os.execute('kill -0 ' .. pid .. ' 2>/dev/null')
-
-      -- Read Gradle output and check for "Listening" message
-      local file = io.open(output_file, 'r')
-      if file then
-        local content = file:read('*all')
-        file:close()
-
-        -- Look for "Listening for transport dt_socket" (with error tolerance - no specific port)
-        if content:match('Listening for transport dt_socket') then
-          dap_attached = true
-          port_ready = true
-          break
+    local function emit_output(text)
+      if text and text ~= '' then
+        backlog = backlog .. text
+        if #backlog > BACKLOG_LIMIT then
+          backlog = backlog:sub(-BACKLOG_LIMIT)
         end
       end
-
-      -- If Gradle process died, check if DAP was already attached
-      if not (proc_alive == 0 or proc_alive == true) then
-        if dap_attached then
-          -- Process ended after DAP attached - this is OK (test completed quickly)
-          port_ready = true
-          break
-        else
-          -- Process died before we saw "Listening" - this is an error
-          print('WARNING: Gradle process ' .. pid .. ' died before debug port was ready!')
-          -- Print last lines of output for debugging
-          local file = io.open(output_file, 'r')
-          if file then
-            local content = file:read('*all')
-            file:close()
-            local last_lines = {}
-            for line in content:gmatch('[^\r\n]+') do
-              table.insert(last_lines, line)
-            end
-            print('Last Gradle output lines:')
-            for i = math.max(1, #last_lines - 5), #last_lines do
-              print('  ' .. last_lines[i])
-            end
-          end
-          break
-        end
-      end
-
-      os.execute('sleep 0.1')
+      schedule_flush()
     end
 
-    if not port_ready then
-      -- Kill the Gradle process since port didn't open
-      os.execute('kill ' .. pid .. ' 2>/dev/null')
-      cleanup_temp_files()
-      error('Timeout: Did not see "Listening for transport dt_socket" in Gradle output within 10 seconds')
+    local listener_id = 'neotest-gradle-backlog-' .. tostring(pid_or_err)
+    dap.listeners.after.event_initialized[listener_id] = function()
+      flush_backlog()
+      dap.listeners.after.event_initialized[listener_id] = nil
     end
 
-    -- Gradle is running and port is ready. From here on we mirror the log file into DAP events.
-    local output_forwarder
-    local function start_output_forwarding()
-      if output_forwarder then
+    local function handle_chunk(chunk)
+      if not chunk or chunk == '' then
         return
       end
-      output_forwarder = create_output_forwarder(output_file)
-      if not output_forwarder then
-        vim.notify('[neotest-gradle] Failed to start Gradle output forwarder', vim.log.levels.WARN)
+      if log_file then
+        log_file:write(chunk)
+        log_file:flush()
       end
+      detection_window = (detection_window .. chunk)
+      if #detection_window > 256 then
+        detection_window = detection_window:sub(-256)
+      end
+      if not port_ready and detection_window:find(LISTENING_TOKEN, 1, true) then
+        port_ready = true
+      end
+      emit_output(chunk)
     end
-    local function stop_output_forwarding()
-      if not output_forwarder then
+
+    stdout_pipe:read_start(function(err, data)
+      if err then
+        vim.schedule(function()
+          vim.notify('[neotest-gradle] stdout: ' .. err, vim.log.levels.WARN)
+        end)
         return
       end
-      output_forwarder.stop()
-      output_forwarder = nil
+      handle_chunk(data)
+    end)
+
+    stderr_pipe:read_start(function(err, data)
+      if err then
+        vim.schedule(function()
+          vim.notify('[neotest-gradle] stderr: ' .. err, vim.log.levels.WARN)
+        end)
+        return
+      end
+      handle_chunk(data)
+    end)
+
+    local function cleanup_resources()
+      if listener_id then
+        dap.listeners.after.event_initialized[listener_id] = nil
+        listener_id = nil
+        context.listener_id = nil
+      end
+      if stdout_pipe then
+        stdout_pipe:read_stop()
+        stdout_pipe:close()
+        stdout_pipe = nil
+        context.stdout_pipe = nil
+      end
+      if stderr_pipe then
+        stderr_pipe:read_stop()
+        stderr_pipe:close()
+        stderr_pipe = nil
+        context.stderr_pipe = nil
+      end
+      if gradle_handle and not gradle_handle:is_closing() then
+        gradle_handle:kill('sigterm')
+        gradle_handle:close()
+      end
+      gradle_handle = nil
+      context.gradle_handle = nil
+      if init_script_path then
+        os.remove(init_script_path)
+        init_script_path = nil
+        context.init_script_path = nil
+      end
+      if log_file then
+        log_file:close()
+        log_file = nil
+      end
+      context.wait_for_port_ready = nil
+      context.cleanup_resources = nil
     end
-    context.stop_output_forwarding = stop_output_forwarding
+
+    local function wait_for_port_ready(timeout_ms)
+      timeout_ms = timeout_ms or 60000
+      local wait_result = vim.wait(timeout_ms, function()
+        return port_ready or context.gradle_exit_code ~= nil
+      end, 50)
+
+      if context.gradle_exit_code ~= nil and not port_ready then
+        cleanup_resources()
+        error('Gradle process exited before debug port was ready (code ' .. tostring(context.gradle_exit_code) .. ')')
+      end
+
+      if wait_result == -1 or not port_ready then
+        cleanup_resources()
+        error('Timeout: Did not see "Listening for transport dt_socket" in Gradle output within ' .. tostring(math.floor(timeout_ms / 1000)) .. ' seconds')
+      end
+    end
+
+    context.cleanup_resources = cleanup_resources
+    context.wait_for_port_ready = wait_for_port_ready
+    context.gradle_handle = gradle_handle
+    context.stdout_pipe = stdout_pipe
+    context.stderr_pipe = stderr_pipe
+    context.init_script_path = init_script_path
+    context.listener_id = listener_id
 
     return {
       context = context,
@@ -442,13 +417,21 @@ wait $GRADLE_PID
         port = 5005,
         timeout = 30000,  -- 30 seconds for DAP connection attempts
         before = function()
-          start_output_forwarding()
+          if context.wait_for_port_ready then
+            local ok, err = pcall(context.wait_for_port_ready, 60000)
+            context.wait_for_port_ready = nil
+            if not ok then
+              error(err)
+            end
+          end
         end,
       }
     }
   end
 
   -- Default integrated strategy
+  local command = { gradle_executable }
+  vim.list_extend(command, gradle_args)
   return {
     command = command,
     context = context,

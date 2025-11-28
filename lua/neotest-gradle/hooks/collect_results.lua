@@ -173,20 +173,24 @@ end
 --- @param build_specfication table - see neotest.RunSpec
 --- @param tree table - see neotest.Tree
 --- @return table<string, table> - see neotest.Result
-return function(build_specfication, _, tree)
+return function(build_specfication, process_result, tree)
+  local context = (build_specfication and build_specfication.context) or {}
+
+  local function assign_output_path()
+    if process_result and context and context.gradle_log_path then
+      process_result.output = context.gradle_log_path
+    end
+  end
   -- Wait for test result XML files to be ready
   local results_directory = build_specfication.context.test_results_directory
   local results_found = wait_for_test_results(results_directory, 30)
 
   if not results_found then
-    if build_specfication.context.stop_output_forwarding then
-      build_specfication.context.stop_output_forwarding()
-      build_specfication.context.stop_output_forwarding = nil
+    if build_specfication.context.cleanup_resources then
+      build_specfication.context.cleanup_resources()
+      build_specfication.context.cleanup_resources = nil
     end
-    if build_specfication.context.cleanup_temp_files then
-      build_specfication.context.cleanup_temp_files()
-      build_specfication.context.cleanup_temp_files = nil
-    end
+    assign_output_path()
     -- Timeout waiting for results - return failure
     local timestamp = os.date('%H:%M:%S')
     print(string.format('[%s] ERROR: Test results not ready - XML files timeout', timestamp))
@@ -206,14 +210,7 @@ return function(build_specfication, _, tree)
     return results
   end
 
-  if build_specfication.context.stop_output_forwarding then
-    build_specfication.context.stop_output_forwarding()
-    build_specfication.context.stop_output_forwarding = nil
-  end
-  if build_specfication.context.cleanup_temp_files then
-    build_specfication.context.cleanup_temp_files()
-    build_specfication.context.cleanup_temp_files = nil
-  end
+  assign_output_path()
 
   local results = {}
   local position = tree:data()
